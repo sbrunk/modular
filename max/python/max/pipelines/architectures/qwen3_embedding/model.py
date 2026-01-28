@@ -288,7 +288,7 @@ class Qwen3EmbeddingModel(PipelineModel[TextContext]):
             output=output,
             embedding=embedding_layer,
             rope=rope,
-            return_hidden_states=ReturnHiddenStates.ALL,  # Return un-normalized states, pooling+norm happens after
+            return_hidden_states=ReturnHiddenStates.ALL_NORMALIZED,
             embedding_multiplier=1.0,
             device=device_refs[0],
         )
