@@ -119,6 +119,25 @@ class Settings(BaseSettings):
         default=[APIType.OPENAI, APIType.SAGEMAKER],
         alias="MAX_SERVE_API_TYPES",
     )
+    extra_routes: list[str] = Field(
+        description=(
+            "Routes an outside package contributes to this server, one "
+            "importable module path per entry, each exposing its router as the "
+            "module-level `router` attribute, for example "
+            '`["mypkg.routes"]`. Defaults to an empty list. The module is '
+            "imported when the app is built, after `--custom-architectures "
+            "DIR:PKG` has put `DIR` on `sys.path`; those specs are "
+            "`directory:package`, and these entries are module paths, so the "
+            "two are not interchangeable. A module that cannot be imported, or "
+            "that exposes no `APIRouter` named `router`, stops the server at "
+            "startup on any host. The routers are mounted beside the OpenAI "
+            "entries of the route table, and only where a local model worker "
+            "exists, so a host serving a remote engine, or one exposing only "
+            "another API type, mounts none."
+        ),
+        default=[],
+        alias="MAX_SERVE_EXTRA_ROUTES",
+    )
     offline_inference: bool = Field(
         description="If True, the server is run in offline inference mode. While it will still spin up workers, it will not spin up the API endpoint or use an HTTP port.",
         default=False,
@@ -546,6 +565,10 @@ class Settings(BaseSettings):
         logger.info(f"    port                   : {self.port}")
         logger.info(f"    metrics_port           : {self.metrics_port}")
         logger.info(f"    api_types              : {api_types_str}")
+        logger.info(
+            f"    extra_routes           : "
+            f"{', '.join(self.extra_routes) or 'none'}"
+        )
         logger.info(f"    operation_mode         : {mode_str}")
         logger.info(
             f"    max_queue_size         : "

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import socket
 import tempfile
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from max.pipelines.context import BaseContext
@@ -98,6 +99,48 @@ def validate_port_is_free(port: int) -> int:
             raise ValueError(
                 f"The network port {port} is already in use"
             ) from e
+
+
+def resolve_extra_routers(settings: Settings) -> list[APIRouter]:
+    """Imports the routers ``settings.extra_routes`` names.
+
+    An entry is an importable module path. The module exposes its router as
+    ``router``, the attribute the entries of :data:`ROUTES` are read at. The
+    module has to be importable: ``--custom-architectures DIR:PKG`` puts
+    ``DIR`` on ``sys.path``, so a route module beside an architecture package
+    resolves as ``PKG.routes``.
+
+    Returns:
+        The routers in setting order, after logging each one.
+
+    Raises:
+        ValueError: If an entry's module cannot be imported, or exposes no
+            ``APIRouter`` named ``router``. The message names the entry. A
+            router that cannot be resolved is a misconfiguration, so the server
+            refuses to start rather than serve a partial route table. This runs
+            before the route table is built, on a host that serves a remote
+            engine as much as on one that loads a model.
+    """
+    routers: list[APIRouter] = []
+    for entry in settings.extra_routes:
+        try:
+            module = importlib.import_module(entry)
+        except Exception as e:
+            # Anything a module raises at import time escapes importlib, and the
+            # traceback names no entry, so a bad setting reads like a MAX fault.
+            # import_custom_architectures reports a bad spec the same way.
+            raise ValueError(
+                f"MAX_SERVE_EXTRA_ROUTES entry {entry!r} cannot be imported: {e}"
+            ) from e
+        router = getattr(module, "router", None)
+        if not isinstance(router, APIRouter):
+            raise ValueError(
+                f"MAX_SERVE_EXTRA_ROUTES entry {entry!r} exposes no APIRouter "
+                "named `router`"
+            )
+        logger.info("Resolved extra routes from %s", entry)
+        routers.append(router)
+    return routers
 
 
 @dataclass(frozen=True)
@@ -398,14 +441,25 @@ def fastapi_app(
 ) -> FastAPI:
     """Builds the FastAPI app from the server settings.
 
+    ``resolve_extra_routers`` runs before the route table is built, so an entry
+    that cannot be resolved stops any host, including one that serves a remote
+    engine. The routers are mounted beside the ``APIType.OPENAI`` entries of
+    :data:`ROUTES`, and only when this host has a local model worker. A
+    contributed module's own ``lifespan`` is not entered; ``lifespan_wrap`` is
+    the only lifespan this app enters.
+
     Args:
         settings: Server settings.
         serving_settings: The model this host serves, or ``None`` for a host
             that serves a remote engine and loads no local model. In that
-            mode only routes that do not need a model worker are mounted.
-            The caller attaches any additional routes and their lifespan.
+            mode only routes that do not need a model worker are mounted, and
+            no contributed route is.
     """
     zmq_endpoint_base = generate_zmq_ipc_path()
+
+    # Resolved ahead of the route table, so a misconfigured entry stops a host
+    # that serves a remote engine the same way it stops one that loads a model.
+    extra_routers = resolve_extra_routers(settings)
 
     @asynccontextmanager
     async def lifespan_wrap(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -521,6 +575,25 @@ def fastapi_app(
         for api_type in settings.api_types:
             for route_module in ROUTES[api_type]:
                 app.include_router(route_module.router)
+            # A contributed route answers from the local model worker, which a
+            # host serving a remote engine does not have. /v1/decisions and
+            # /v1/systemone are OpenAI-style extensions, so the routers an
+            # outside package contributes ride the same gate as those two; a
+            # per-entry dialect is not offered.
+            if api_type is APIType.OPENAI:
+                for extra_router in extra_routers:
+                    app.include_router(extra_router)
+        if extra_routers and APIType.OPENAI not in settings.api_types:
+            # The entries resolved, so the setting is not a typo; this host
+            # exposes no OpenAI dialect for these routers to ride beside. Say
+            # so, or a missing route reads as a mount that failed.
+            logger.info(
+                "MAX_SERVE_EXTRA_ROUTES entries %s resolved but mounted no "
+                "routes: this host serves %s, and a contributed route answers "
+                "beside the OpenAI routes.",
+                ", ".join(settings.extra_routes),
+                ", ".join(api_type.value for api_type in settings.api_types),
+            )
 
     app.state.settings = settings
 
