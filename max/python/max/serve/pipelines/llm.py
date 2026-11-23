@@ -798,7 +798,8 @@ class TokenGeneratorPipeline(
     async def score(
         self,
         request: TextGenerationRequest,
-        label_token_ids: Sequence[int],
+        label_token_ids: Sequence[int] | Sequence[Sequence[int]],
+        label_positions: Sequence[int] | None = None,
     ) -> LabelScoringOutput:
         """Scores candidate label tokens for ``request`` without generating.
 
@@ -811,21 +812,53 @@ class TokenGeneratorPipeline(
         exact tokenization, since a label is only a valid next-token candidate
         after that exact prompt.
 
+        A prompt that holds several answer positions takes one prefill step
+        and returns one score row per position. Pass ``label_positions`` with
+        one entry per position, and pass one candidate list per position as
+        ``label_token_ids``. The scores of more than one position come back in
+        :attr:`LabelScoringOutput.label_log_probability_rows`, in the order the
+        positions were named; :attr:`LabelScoringOutput.label_log_probabilities`
+        is empty then, because no one row answers that request.
+
         Args:
             request: The request to score.
             label_token_ids: Candidate token ids to score, in the order the
-                scores are returned.
+                scores are returned. With ``label_positions``, one list per
+                named position.
+            label_positions: Prompt positions to score, in the order their
+                scores are returned. ``None`` scores the last position.
 
         Returns:
             The label log-probabilities and prompt accounting.
 
         Raises:
-            ValueError: If no candidates are given.
+            ValueError: If no candidates are given, or ``label_positions`` and
+                the candidate lists count differently.
             RuntimeError: If the worker returns no label scores, which a
                 pipeline without label scoring support does.
         """
         if not label_token_ids:
             raise ValueError("score() requires at least one label token id")
+        if label_positions is not None:
+            flat = not all(
+                isinstance(group, (list, tuple)) for group in label_token_ids
+            )
+            if flat:
+                raise ValueError(
+                    "score() needs one candidate list per named position: "
+                    f"{len(label_positions)} positions and a flat list of ids"
+                )
+            groups = [
+                list(group)
+                for group in cast(Sequence[Sequence[int]], label_token_ids)
+            ]
+            if len(groups) != len(label_positions) or not all(groups):
+                raise ValueError(
+                    "score() needs one non-empty candidate list per position: "
+                    f"{len(label_positions)} positions and {len(groups)} lists"
+                )
+        else:
+            groups = [list(cast(Sequence[int], label_token_ids))]
         request = replace(
             request,
             sampling_params=replace(request.sampling_params, max_new_tokens=1),
@@ -837,7 +870,10 @@ class TokenGeneratorPipeline(
                 with record_ms(METRICS.input_time):
                     context = await self.tokenizer.new_context(request)
                 assert isinstance(context, (TextContext, TextAndVisionContext))
-                context.label_token_ids = list(label_token_ids)
+                context.label_token_ids = groups[0]
+                if label_positions is not None:
+                    context.label_positions = list(label_positions)
+                    context.label_token_id_groups = groups
                 inject_trace_carrier(context)
                 response_stream = await self.model_worker.stream(
                     request.request_id, context
@@ -847,6 +883,23 @@ class TokenGeneratorPipeline(
                 async for responses, _batch_id in response_stream:
                     for response in responses:
                         assert isinstance(response, TextGenerationOutput)
+                        if response.label_log_probability_rows is not None:
+                            rows = response.label_log_probability_rows
+                            # One row answers the request, so the flat field
+                            # holds it. Several rows answer several positions of
+                            # one prompt, and none of them is the request's own
+                            # answer; the caller reads them by position from
+                            # ``label_log_probability_rows``.
+                            return LabelScoringOutput(
+                                label_log_probabilities=(
+                                    rows[0] if len(rows) == 1 else []
+                                ),
+                                prompt_token_count=context.tokens.prompt_length,
+                                cached_token_count=response.num_cached_tokens,
+                                label_log_probability_rows=(
+                                    rows if len(rows) > 1 else None
+                                ),
+                            )
                         if response.label_log_probabilities is None:
                             continue
                         return LabelScoringOutput(

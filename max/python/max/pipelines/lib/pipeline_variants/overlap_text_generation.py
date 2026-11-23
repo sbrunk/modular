@@ -1081,10 +1081,11 @@ class AsyncBatch(Generic[TextGenerationContextType]):
     think_end_token_id: int | None = None
     """``None`` disables ``in_reasoning_phase`` tracking on commit."""
 
-    label_log_probabilities: dict[RequestID, list[float]] = field(
+    label_log_probabilities: dict[RequestID, list[list[float]]] = field(
         default_factory=dict
     )
-    """Label scores of the scoring requests in this batch, already on host."""
+    """Label scores of the scoring requests in this batch, already on host:
+    one list per scored row, in the order that request named its positions."""
 
     @traced
     def sync_and_process_outputs(
@@ -1175,9 +1176,12 @@ class AsyncBatch(Generic[TextGenerationContextType]):
                 self.inputs.flat_batch,
                 overwrite_future=self.overwrite_future,
             )
-            for request_id, scores in self.label_log_probabilities.items():
+            for request_id, rows in self.label_log_probabilities.items():
                 if request_id in outputs:
-                    outputs[request_id].label_log_probabilities = scores
+                    output = outputs[request_id]
+                    output.label_log_probability_rows = rows
+                    if len(rows) == 1:
+                        output.label_log_probabilities = rows[0]
             wrapped_outputs = _AsyncBatchOutput(output_dict=outputs)
         else:
             spec_decode_batch = self.spec_decode
@@ -3648,7 +3652,9 @@ class OverlapTextGenerationPipeline(
         generated_tokens: Buffer,
         *,
         on_host: bool,
-        label_log_probabilities: dict[RequestID, list[float]] | None = None,
+        label_log_probabilities: (
+            dict[RequestID, list[list[float]]] | None
+        ) = None,
     ) -> AsyncBatch[TextGenerationContextType]:
         """Starts the D2H copy of the batch's ``[B]`` generated tokens.
 

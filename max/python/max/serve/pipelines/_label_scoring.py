@@ -23,9 +23,17 @@ class LabelScoringOutput:
     """Result of scoring candidate labels for one prompt."""
 
     label_log_probabilities: list[float]
-    """Full-vocabulary log-probability of each candidate label token at the
-    last prompt position, in candidate order."""
+    """Full-vocabulary log-probability of each candidate label token, in
+    candidate order. It holds the scores of the one row this request scored; a
+    request that named several positions scores more than one row, no one of
+    which is its own answer, and gets an empty list here and its rows in
+    :attr:`label_log_probability_rows`."""
     prompt_token_count: int
     """Number of prompt tokens the model processed."""
     cached_token_count: int | None = None
     """Number of prompt tokens served from the KV prefix cache."""
+    label_log_probability_rows: list[list[float]] | None = None
+    """Log-probabilities of every row that prompt was scored at, in the order
+    the caller named its positions, each with that position's own candidates.
+    ``None`` when one row was scored, whose scores are in
+    :attr:`label_log_probabilities`."""

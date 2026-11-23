@@ -767,9 +767,12 @@ class TextGenerationPipeline(
         )
         # A chunked-prefill step emits no output for its request, so its
         # scores wait for the step that finishes the prompt.
-        for request_id, scores in label_log_probabilities.items():
+        for request_id, rows in label_log_probabilities.items():
             if request_id in res:
-                res[request_id].label_log_probabilities = scores
+                output = res[request_id]
+                output.label_log_probability_rows = rows
+                if len(rows) == 1:
+                    output.label_log_probabilities = rows[0]
 
         # Update the cache lengths in our kv_cache manager.
         # This should be done after the contexts are updated.

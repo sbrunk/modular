@@ -34,6 +34,54 @@ from ..interfaces import ModelOutputs
 from ..utils import CompilationTimer
 
 
+def _asked_labels(
+    context: TextGenerationContextType,
+) -> list[list[int] | None]:
+    """Returns the candidate list of each logits row this context asks scored.
+
+    A scoring context asks one row per entry of
+    :attr:`TextContext.label_positions` when it names positions, and its
+    next-token row otherwise. A context that is not scoring, or a scoring
+    request whose prompt is still being chunked, asks nothing and gets one
+    ``None``: only the step that completes the prompt holds the answer rows.
+
+    Raises:
+        ValueError: If the context names positions and candidate groups in
+            different counts.
+    """
+    if (
+        not isinstance(context, TextContext)
+        or context.tokens.actively_chunked
+        or context.tokens.generated_length != 0
+    ):
+        return [None]
+    groups = context.label_token_id_groups
+    positions = context.label_positions
+    if positions is None:
+        if groups is None:
+            return (
+                [list(context.label_token_ids)]
+                if context.label_token_ids
+                else [None]
+            )
+        raise ValueError(
+            f"request {context.request_id} names {len(groups)} candidate "
+            "groups and no label positions: a positions request names both"
+        )
+    if groups is None:
+        raise ValueError(
+            f"request {context.request_id} names {len(positions)} label "
+            "positions and no candidate groups: every scored row needs its "
+            "own candidate list"
+        )
+    if len(groups) != len(positions):
+        raise ValueError(
+            f"request {context.request_id} names {len(positions)} label "
+            f"positions and {len(groups)} candidate groups"
+        )
+    return [list(group) for group in groups]
+
+
 class BatchLabelScorer:
     """Scores the candidate labels of the scoring requests in a batch.
 
@@ -67,47 +115,69 @@ class BatchLabelScorer:
         self,
         model_outputs: ModelOutputs,
         flat_batch: Sequence[TextGenerationContextType],
-    ) -> dict[RequestID, list[float]]:
+    ) -> dict[RequestID, list[list[float]]]:
         """Scores the candidate labels of every scoring request in the batch.
 
         Must run before the sampler: its penalty and min-token processors edit
         the logits buffer in place.
 
         Args:
-            model_outputs: Outputs of this step's forward pass.
-            flat_batch: The flattened context batch, matching the logits rows.
+            model_outputs: Outputs of this step's forward pass. A batch whose
+                contexts named positions scores the rows of
+                :attr:`ModelOutputs.label_logits`; one that named none scores
+                :attr:`ModelOutputs.next_token_logits`.
+            flat_batch: The flattened context batch. A context contributes one
+                logits row, or one per entry of
+                :attr:`TextContext.label_positions`.
 
         Returns:
-            Full-vocabulary label log-probabilities keyed by request id, for
-            the scoring requests only. Empty when the batch has none.
+            Full-vocabulary label log-probabilities keyed by request id, one
+            list per scored row in the order that request named them. Empty
+            when the batch has none.
 
         Raises:
             ValueError: If the batch has a scoring request but the model
-                returns variable logits or the vocabulary size is unknown.
+                returns variable logits or the vocabulary size is unknown, or a
+                scoring request names a different number of positions and
+                candidate groups.
         """
-        # Only the step that completes the prompt has the answer position as
-        # its last row. A chunked-prefill step or a decode step does not.
-        label_token_ids = [
-            context.label_token_ids
-            if isinstance(context, TextContext)
-            and not context.tokens.actively_chunked
-            and context.tokens.generated_length == 0
-            else None
-            for context in flat_batch
+        # The readout gathers one logits row per named position, so the split
+        # back to one entry per request lands here, where the counts were
+        # named; a request contributes as many rows as it asked, with nothing
+        # padded up to a batch maximum.
+        asked = [_asked_labels(context) for context in flat_batch]
+        row_labels = [
+            labels for context_labels in asked for labels in context_labels
         ]
-        if not any(label_token_ids):
+        if not any(row_labels):
             return {}
         if model_outputs.logit_offsets is not None:
+            # Policy, not consequence: the decisions route refuses variable
+            # logits, and a build that returns them would have to say which of
+            # its rows are the scored ones, which the host already named.
             raise ValueError("label scoring does not support variable logits")
-        logits = model_outputs.next_token_logits
+        # A model that gathers the rows the host named returns them on their own
+        # channel, because ``next_token_logits`` stays one row per context for
+        # the sampler. A step that named no positions has nothing on that
+        # channel and scores the next-token rows, as it always did.
+        logits = model_outputs.label_logits
+        if logits is None:
+            logits = model_outputs.next_token_logits
         if logits is None:
             logits = model_outputs.logits
-        scores = self._label_scorer().score(logits, label_token_ids)
-        return {
-            context.request_id: row_scores
-            for context, row_scores in zip(flat_batch, scores, strict=True)
-            if row_scores is not None
-        }
+        scores = self._label_scorer().score(logits, row_labels)
+        results: dict[RequestID, list[list[float]]] = {}
+        cursor = 0
+        for context, context_labels in zip(flat_batch, asked, strict=True):
+            rows = [
+                row
+                for row in scores[cursor : cursor + len(context_labels)]
+                if row is not None
+            ]
+            cursor += len(context_labels)
+            if rows:
+                results[context.request_id] = rows
+        return results
 
     def _label_scorer(self) -> LabelScorer:
         if self._scorer is None:

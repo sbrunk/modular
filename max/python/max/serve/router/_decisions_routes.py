@@ -95,7 +95,7 @@ async def create_decisions(request: Request) -> JSONResponse:
             model=model_name,
             prompt_format_version=rendered.decision_format.version,
             answers=answers,
-            usage=_usage(results),
+            usage=_usage(results, rendered.encoded),
         )
     return JSONResponse(content=response.model_dump(exclude_none=True))
 
@@ -109,9 +109,16 @@ def _require_single_row(encoded: Sequence[EncodedQuestion]) -> None:
         )
 
 
-def _usage(results: Sequence[Sequence[LabelScoringOutput]]) -> CompletionUsage:
-    """Token accounting of the scoring requests; nothing is completed."""
-    prompt_tokens, cached_tokens = usage_totals(results)
+def _usage(
+    results: Sequence[Sequence[LabelScoringOutput]],
+    encoded: Sequence[EncodedQuestion],
+) -> CompletionUsage:
+    """Token accounting of the scoring requests; nothing is completed.
+
+    A prompt several questions share is billed once, because it is scored
+    once.
+    """
+    prompt_tokens, cached_tokens = usage_totals(results, encoded)
     return CompletionUsage(
         prompt_tokens=prompt_tokens,
         completion_tokens=0,

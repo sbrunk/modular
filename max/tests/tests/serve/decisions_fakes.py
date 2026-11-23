@@ -19,7 +19,7 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, FastAPI
 from max.pipelines.modeling.types import (
@@ -112,18 +112,38 @@ class FakePipeline:
         self.requests: list[TextGenerationRequest] = []
         self.labels: list[list[int]] = []
         self.prompt_ids: list[list[int]] = []
+        self.positions: list[list[int] | None] = []
 
     async def score(
         self,
         request: TextGenerationRequest,
-        label_token_ids: Sequence[int],
+        label_token_ids: Sequence[int] | Sequence[Sequence[int]],
+        label_positions: Sequence[int] | None = None,
     ) -> LabelScoringOutput:
+        """Scores one prompt, at its last position or at each named one."""
         assert isinstance(request.prompt, list)
         self.requests.append(request)
-        self.labels.append(list(label_token_ids))
         self.prompt_ids.append(list(request.prompt))
+        self.positions.append(
+            list(label_positions) if label_positions is not None else None
+        )
+        if label_positions is not None:
+            groups = [
+                list(group)
+                for group in cast(Sequence[Sequence[int]], label_token_ids)
+            ]
+            self.labels.extend(groups)
+            rows = [self._scorer(request, group) for group in groups]
+            return LabelScoringOutput(
+                label_log_probabilities=rows[0] if len(rows) == 1 else [],
+                prompt_token_count=len(request.prompt),
+                cached_token_count=2,
+                label_log_probability_rows=rows if len(rows) > 1 else None,
+            )
+        flat = list(cast(Sequence[int], label_token_ids))
+        self.labels.append(flat)
         return LabelScoringOutput(
-            label_log_probabilities=self._scorer(request, label_token_ids),
+            label_log_probabilities=self._scorer(request, flat),
             prompt_token_count=len(request.prompt),
             cached_token_count=2,
         )

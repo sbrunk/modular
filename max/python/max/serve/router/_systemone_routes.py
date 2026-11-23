@@ -166,7 +166,7 @@ async def create_systemone(request: Request) -> JSONResponse:
         results = await score_all(
             request, rendered.pipeline, model_name, rendered.encoded
         )
-        prompt_tokens, _ = usage_totals(results)
+        prompt_tokens, _ = usage_totals(results, rendered.encoded)
         response = SystemOneResponse(
             model=model_name,
             answers={

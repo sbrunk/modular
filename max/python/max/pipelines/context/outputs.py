@@ -57,7 +57,13 @@ class TextGenerationOutput:
     label_log_probabilities: list[float] | None = None
     """Full-vocabulary log-probabilities of the request's candidate label
     tokens at the last prompt position, in candidate order. Only set for
-    label-scoring requests."""
+    label-scoring requests, and only when the request asked one position; a
+    request that named several keeps its scores in
+    :attr:`label_log_probability_rows`."""
+
+    label_log_probability_rows: list[list[float]] | None = None
+    """Label log-probabilities of every row the request asked scored, in the
+    order it named its positions. Only set for label-scoring requests."""
 
     @property
     def is_done(self) -> bool:
@@ -103,6 +109,14 @@ class TextGenerationOutput:
                     output.label_log_probabilities
                     for output in outputs
                     if output.label_log_probabilities is not None
+                ),
+                None,
+            ),
+            label_log_probability_rows=next(
+                (
+                    output.label_log_probability_rows
+                    for output in outputs
+                    if output.label_log_probability_rows is not None
                 ),
                 None,
             ),
