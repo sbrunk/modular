@@ -11,13 +11,14 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""The request flow shared by ``/v1/decisions`` and ``/v1/systemone``.
+"""The request flow shared by ``/v1/decisions``, ``/v1/systemone`` and
+``/v1/locate``.
 
-Both routes parse their own schema, then render questions, score them, and
-shape the answers. This module owns the two steps in the middle and the
+Each route parses its own schema, then renders questions, scores them, and
+shapes the answers. :mod:`_decisions_flow` owns the steps in the middle and the
 mapping of their failures to HTTP errors, so the routes cannot drift apart: a
-:class:`DecisionRequestError` or :class:`InputError` is a 400, and anything
-else a logged 500.
+:class:`DecisionRequestError` or :class:`InputError` is a 400, a
+:class:`LocateRowsUnavailable` is a 501, and anything else a logged 500.
 """
 
 from __future__ import annotations
@@ -54,6 +55,16 @@ class RenderedRequest:
     encoded: list[EncodedQuestion]
 
 
+class LocateRowsUnavailable(RuntimeError):
+    """The state's hidden rows for this request cannot be read.
+
+    An engine raises it when the rows it has cover a different sequence than
+    the request encoded to, and names what a live answer needs. That is a
+    server capability the caller can be told about, so it is not a 400 and not
+    a 500.
+    """
+
+
 @asynccontextmanager
 async def decision_errors(request: Request, route: str) -> AsyncIterator[None]:
     """Maps failures inside the block to HTTP errors.
@@ -64,7 +75,8 @@ async def decision_errors(request: Request, route: str) -> AsyncIterator[None]:
 
     Raises:
         HTTPException: With status 400 for a request this server or model
-            cannot answer, and 500 for any other failure.
+            cannot answer, 501 for a server that cannot read the state's rows,
+            and 500 for any other failure.
         RequestQueueFull: If the worker queue rejected admission; the central
             handler maps it to HTTP 429.
     """
@@ -77,6 +89,14 @@ async def decision_errors(request: Request, route: str) -> AsyncIterator[None]:
             "Invalid request %s to %s: %s", request.state.request_id, route, e
         )
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except LocateRowsUnavailable as e:
+        logger.warning(
+            "No state rows for request %s to %s: %s",
+            request.state.request_id,
+            route,
+            e,
+        )
+        raise HTTPException(status_code=501, detail=str(e)) from e
     except Exception as e:
         logger.exception(
             "Exception during request %s to %s",
