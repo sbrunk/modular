@@ -549,9 +549,19 @@ def process_ragged_kv_outputs(
     return_logits: ReturnLogits,
     return_hidden_states: ReturnHiddenStates,
 ) -> ModelOutputs:
-    """Maps standard ragged+KV logits buffers to :class:`ModelOutputs`."""
+    """Maps standard ragged+KV logits buffers to :class:`ModelOutputs`.
+
+    The buffers are read by position, in the order the ragged+KV graphs return
+    them: next-token rows, then ``logits`` and ``logit_offsets`` when the build
+    returns them, then hidden states. A count outside those shapes is refused by
+    name, since guessing which field a second or fifth buffer holds is how a
+    scored row ends up in the sampler's field.
+    """
     has_offsets = return_logits in (ReturnLogits.VARIABLE, ReturnLogits.ALL)
     has_hidden_states = return_hidden_states != ReturnHiddenStates.NONE
+    expected = 1 + (2 if has_offsets else 0) + (1 if has_hidden_states else 0)
+    if len(outputs) != expected:
+        _refuse_unnamed_outputs(len(outputs))
 
     assert isinstance(outputs[0], Buffer)
     if has_offsets and has_hidden_states:
@@ -582,10 +592,32 @@ def process_ragged_kv_outputs(
             next_token_logits=outputs[0],
             hidden_states=outputs[1],
         )
-    assert len(outputs) == 1
+    if len(outputs) != 1:
+        _refuse_unnamed_outputs(len(outputs))
     return ModelOutputs(
         logits=outputs[0],
         next_token_logits=outputs[0],
+    )
+
+
+def _refuse_unnamed_outputs(count: int) -> None:
+    """Refuses a ragged+KV output list this mapper cannot name.
+
+    The mapper reads the buffers by position, and the shapes it knows are the
+    next-token rows with and without ``logit_offsets`` and hidden states. The
+    ``label_logits`` channel is a fifth such buffer, and a decoder that returns
+    it goes through :meth:`BatchProcessor.process_outputs`, which names each
+    field, not through here.
+
+    Raises:
+        ValueError: Always, naming what arrived and where the channel goes.
+    """
+    raise ValueError(
+        "the legacy ragged+KV output mapper names at most four buffers "
+        "(next-token rows, logits, logit_offsets, hidden states) and got "
+        f"{count}. A model that returns the label_logits channel, or any other "
+        "output this shape does not hold, names its outputs through "
+        "ModuleV3Outputs and BatchProcessor.process_outputs."
     )
 
 

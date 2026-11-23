@@ -46,3 +46,20 @@ modular_py_test(
         "//max/python/max/pipelines/architectures/qwen3_5_modulev3",
     ],
 )
+
+# The readout gather runs on the CPU device and the operand gate reads a class
+# attribute, so these cases need no accelerator tag and load no checkpoint.
+modular_py_test(
+    name = "test_label_logits_readout",
+    srcs = ["test_label_logits_readout.py"],
+    deps = [
+        "//max/python/max:tensor",
+        "//max/python/max/driver",
+        "//max/python/max/dtype",
+        "//max/python/max/engine",
+        "//max/python/max/graph",
+        "//max/python/max/pipelines/architectures/qwen3_5_modulev3",
+        "//max/python/max/pipelines/lib",
+        requirement("numpy"),
+    ],
+)

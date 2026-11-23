@@ -311,7 +311,9 @@ def decoder_outputs(
     decoder that delegates to one returns them through this.
 
     Args:
-        outputs: The model's grouped outputs.
+        outputs: The model's grouped outputs, whose ``logits`` group may carry
+            the ``label_logits`` leaf of a build that declares the
+            ``label_positions`` operand.
         state: The per-request state the decoder returns for its next step,
             in the order its store declares.
 
@@ -331,6 +333,7 @@ def decoder_outputs(
         next_token_logits=logits["next_token_logits"],
         logits=logits.get("logits"),
         logit_offsets=logits.get("logit_offsets"),
+        label_logits=logits.get("label_logits"),
         hidden_states=hidden_states,
         state=tuple(state) or None,
     )
@@ -363,6 +366,7 @@ def _graph_outputs(
         outputs.logit_offsets,
         return_hidden_states,
         () if outputs.hidden_states is None else (outputs.hidden_states,),
+        outputs.label_logits,
     )
     if not outputs.state:
         return grouped

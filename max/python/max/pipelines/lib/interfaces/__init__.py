@@ -52,6 +52,7 @@ from .pipeline_model import (
     PipelineModelWithKVCache,
     UnifiedEagleOutputs,
     UnifiedSpecDecodeInputs,
+    bind_captured_outputs,
 )
 
 __all__ = [
@@ -80,6 +81,7 @@ __all__ = [
     "UnifiedEagleOutputs",
     "UnifiedSpecDecodeInputs",
     "arch_has_vision_tower",
+    "bind_captured_outputs",
     "build_single_replica_ragged_token_arrays",
     "modulev3_ragged_kv_symbolic_input_tree",
     "process_ragged_kv_outputs",

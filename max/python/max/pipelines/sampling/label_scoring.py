@@ -143,7 +143,9 @@ class LabelScorer:
         without launching when no row has candidates.
 
         Args:
-            logits: ``[batch, vocab]`` next-token logits, one row per request.
+            logits: ``[rows, vocab]`` logits, one row per scored position. A
+                step that names no positions scores each request's next-token
+                row, so there the rows and the requests are the same count.
             label_token_ids: Per-row candidate token ids, or ``None`` for rows
                 that are not scoring requests (those rows get ``None``).
 
@@ -159,7 +161,9 @@ class LabelScorer:
         batch_size = len(label_token_ids)
         if int(logits.shape[0]) != batch_size:
             raise ValueError(
-                f"logits batch {int(logits.shape[0])} != {batch_size} requests"
+                f"logits rows {int(logits.shape[0])} != {batch_size} "
+                "candidate lists: every scored row needs its own list, and "
+                "the gather returns one row per named position"
             )
         widest = max((len(ids) for ids in label_token_ids if ids), default=0)
         if widest == 0:

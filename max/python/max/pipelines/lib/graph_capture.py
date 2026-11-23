@@ -56,7 +56,12 @@ from max.profiler import traced
 from max.tensor.compilation import CompiledCallable
 from tqdm import tqdm
 
-from .interfaces import ModelInputs, ModelOutputs, UnifiedEagleOutputs
+from .interfaces import (
+    ModelInputs,
+    ModelOutputs,
+    UnifiedEagleOutputs,
+    bind_captured_outputs,
+)
 
 logger = logging.getLogger("max.pipelines")
 
@@ -172,6 +177,7 @@ def _release_graph_capture_outputs_to_borrowed(
         "logits",
         "next_token_logits",
         "logit_offsets",
+        "label_logits",
         "hidden_states",
         "num_accepted_draft_tokens",
         "next_tokens",
@@ -453,7 +459,7 @@ class ServeGraphCaptureRunner:
                         *self._engine_inputs(input_buffers),
                     )
                     if not self._is_spec_decode:
-                        outputs = ModelOutputs(*output_buffers)
+                        outputs = bind_captured_outputs(output_buffers)
                     else:
                         outputs = UnifiedEagleOutputs.from_buffers(
                             output_buffers

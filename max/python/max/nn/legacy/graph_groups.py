@@ -276,15 +276,22 @@ class EPLBProfile(GraphGroup[str, tuple[BufferType, ...]]):
     kind = "eplb_profile"
 
 
-LogitsName = Literal["next_token_logits", "logits", "logit_offsets"]
+LogitsName = Literal[
+    "next_token_logits", "logits", "logit_offsets", "label_logits"
+]
 """The outputs a :class:`Logits` group can hold."""
 
 
 class Logits(GraphGroup[LogitsName, _TensorT]):
     """The decoder's logits: the next token's, and any others requested.
 
-    Which are present depends on the decoder's ``return_logits``, and a
-    caller that set it reads the ones it asked for.
+    Which of ``next_token_logits``, ``logits`` and ``logit_offsets`` are
+    present depends on the decoder's ``return_logits``, and a caller that set
+    it reads the ones it asked for. ``label_logits`` follows a different rule:
+    it is present when the decoder declared the ``label_positions`` operand and
+    this batch's requests named rows to score, so its row count comes from the
+    host. It is the last leaf of the group, and a build that names no rows
+    returns the leaves it returned before.
     """
 
     kind = "logits"
@@ -295,6 +302,7 @@ class Logits(GraphGroup[LogitsName, _TensorT]):
         next_token_logits: _TensorT | None = None,
         logits: _TensorT | None = None,
         logit_offsets: _TensorT | None = None,
+        label_logits: _TensorT | None = None,
     ) -> None:
         super().__init__()
         if next_token_logits is not None:
@@ -303,6 +311,8 @@ class Logits(GraphGroup[LogitsName, _TensorT]):
             self["logits"] = logits
         if logit_offsets is not None:
             self["logit_offsets"] = logit_offsets
+        if label_logits is not None:
+            self["label_logits"] = label_logits
 
 
 class HiddenStates(GraphGroup[str, tuple[_TensorT, ...]]):

@@ -466,6 +466,29 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
         )
         return (input_row_offsets[1:].unsqueeze(-1) - distance).reshape([-1])
 
+    @staticmethod
+    def scored_rows(
+        input_row_offsets: Tensor, label_positions: Tensor | None
+    ) -> Tensor:
+        """Returns the rows of ``h`` the scoring readout gathers.
+
+        With ``label_positions`` the operand already names every scored row's
+        index into the ragged batch in batch order, so a request that asks
+        several positions of one sequence gets one logits row per position and
+        the gather index is the operand itself. Without it the rows are each
+        sequence's last, which is where a generation step scores its next token;
+        the readout calls this only for a build that declares the operand, and
+        keeps those rows in :attr:`ModuleV3Outputs.next_token_logits`.
+
+        Args:
+            input_row_offsets: The ragged row offsets of the batch.
+            label_positions: Each scored row's index into the ragged tokens, or
+                ``None`` when the deployment declares no such operand.
+        """
+        if label_positions is None:
+            return input_row_offsets[1:] - 1
+        return label_positions.cast(DType.int64)
+
     def forward(
         self,
         tokens: Tensor,
@@ -476,6 +499,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
         vision: VisionInputs[Tensor] | None = None,
         position_ids: Tensor | None = None,
         segment_ids: Tensor | None = None,
+        label_positions: Tensor | None = None,
     ) -> ModuleV3Outputs:
         """Runs the decoder and returns the logits it was built to."""
         config = self.config
@@ -494,8 +518,21 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
             segment_ids=segment_ids,
             capture_layers=capture,
         )
+        # Two readout channels. The sampler reads ``next_token_logits`` as one
+        # row per context, so that gather keeps its rows; the readout of the
+        # positions the host named lands beside it in ``label_logits``, where a
+        # context can hold any number of rows.
         last_rows = input_row_offsets[1:] - 1
         last = self.logits(F.gather(h, last_rows, axis=0))
+        label_logits: Tensor | None = None
+        if label_positions is not None:
+            label_logits = self.logits(
+                F.gather(
+                    h,
+                    self.scored_rows(input_row_offsets, label_positions),
+                    axis=0,
+                )
+            )
         logits: Tensor | None = None
         offsets: Tensor | None = None
         if config.return_logits == ReturnLogits.ALL:
@@ -527,6 +564,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
             next_token_logits=last,
             logits=logits,
             logit_offsets=offsets,
+            label_logits=label_logits,
             hidden_states=None if hidden is None else hidden.local_shards[0],
         )
 
@@ -550,7 +588,23 @@ class Qwen3_5Decoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
         "kv",
         "vision",
         "token_positions",
+        "label_positions",
     )
+    label_positions_declared = False
+    """Whether this deployment takes the scored rows of a label-scoring step.
+
+    The donor leaves it off, so a stock Qwen3.5 deployment traces one readout
+    per step and no ``label_positions`` operand: the graph it traces today. A
+    deployment that scores labels at rows its requests names, such as a shared
+    decisions row, sets this (or a ``label_positions_type`` classmethod, as
+    :func:`~max.pipelines.lib.module_registration.label_positions_type` reads
+    it) and then takes the ``[total_label_positions]`` operand and returns those
+    rows in
+    :attr:`~max.pipelines.lib.interfaces.pipeline_model.ModuleV3Outputs.label_logits`
+    beside the next-token rows. ``input_layout`` names the field either way: an
+    input name whose type the gate withholds is not a graph input, which is how
+    ``token_positions`` is gated here.
+    """
 
     def __init__(self, config: Qwen3_5Config) -> None:
         super().__init__()
@@ -607,4 +661,5 @@ class Qwen3_5Decoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
             state,
             inputs.vision,
             position_ids,
+            label_positions=inputs.label_positions,
         )

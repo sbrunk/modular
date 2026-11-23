@@ -238,6 +238,7 @@ __all__ = [
     "decoder_vision_input_types",
     "device_mesh",
     "graph_name",
+    "label_positions_type",
     "module_pipeline_model",
     "supports_pipeline_stages",
     "token_position_type",
@@ -358,6 +359,24 @@ def token_position_type(
     return TensorType(dtype, ["total_seq_len"], device=device_ref)
 
 
+def label_positions_type(
+    module_cls: type[Module[..., Any]], config: object, device_ref: DeviceRef
+) -> TensorType | None:
+    """Returns a registered decoder's ``label_positions`` input type.
+
+    A decoder that scores labels at positions its requests names declares a
+    ``label_positions_type(config, device_ref)`` classmethod, or sets
+    ``label_positions_declared`` to take the plain ``[total_label_positions]``
+    ``int64`` operand. A decoder without either gets no such graph input.
+    """
+    declared = getattr(module_cls, "label_positions_type", None)
+    if declared is not None:
+        return declared(config, device_ref)
+    if not getattr(module_cls, "label_positions_declared", False):
+        return None
+    return TensorType(DType.int64, ["total_label_positions"], device=device_ref)
+
+
 def consumes_vision(module_cls: type[Module[..., Any]]) -> bool:
     """Returns whether a registered decoder reads image embeddings.
 
@@ -441,6 +460,7 @@ def decoder_input_types(
     data_parallel_degree: int = 1,
     vision: VisionInputs[TensorLayout] | VisionInputs[TensorType] | None = None,
     token_positions: TensorType | None = None,
+    label_positions: TensorType | None = None,
     batch_context_lengths: BatchContext[tuple[TensorType, ...]] | None = None,
     ep: object | None = None,
     hisparse: Sequence[TensorType] = (),
@@ -473,6 +493,9 @@ def decoder_input_types(
             with a ``VISION`` module. A graph built with them takes them on
             every batch, empty when the batch has no images.
         token_positions: The absolute position of each ragged token.
+        label_positions: The rows a label-scoring step gathers, when the
+            decoder declares them. See
+            :attr:`~max.pipelines.lib.role_contracts.DecoderInputs.label_positions`.
         batch_context_lengths: The context-length input types, when the
             decoder reads them, under the field of the length it reads.
         ep: The expert-parallel input types, when serving with expert
@@ -509,6 +532,8 @@ def decoder_input_types(
             if token_positions.rank > 1
             else token_positions
         )
+    if label_positions is not None:
+        types["label_positions"] = label_positions
     if vision is not None:
         types["vision"] = VisionMerge(
             image_embeddings=vision.embeddings,
@@ -646,6 +671,9 @@ class DecoderModelInputs(ModelInputs):
     token_positions: Buffer | None = None
     """Each ragged token's absolute sequence position, when declared."""
 
+    label_positions: Buffer | None = None
+    """The scored rows of a label-scoring step, when the graph takes them."""
+
     host_input_row_offsets: Buffer | None = None
     """A CPU copy of :attr:`input_row_offsets`, under data parallelism."""
 
@@ -693,6 +721,7 @@ class DecoderModelInputs(ModelInputs):
             ),
             input_row_offsets=self.input_row_offsets,
             token_positions=self.token_positions,
+            label_positions=self.label_positions,
             host_input_row_offsets=self.host_input_row_offsets,
             return_n_logits=self.return_n_logits,
             data_parallel_splits=self.data_parallel_splits,
@@ -873,6 +902,10 @@ class DecoderBatchProcessor(BatchProcessor[TextContext, DecoderModelInputs]):
             inputs.token_positions = Buffer.from_numpy(
                 self.token_positions(context_batch, position_type)
             ).to(position_type.device.to_device())
+        if self.input_tree is not None and "label_positions" in self.input_tree:
+            inputs.label_positions = Buffer.from_numpy(
+                self.label_positions(context_batch, input_row_offsets)
+            ).to(device)
         if data_parallel_degree > 1:
             inputs.host_input_row_offsets = Buffer.from_numpy(input_row_offsets)
             inputs.data_parallel_splits = Buffer.from_numpy(
@@ -918,6 +951,47 @@ class DecoderBatchProcessor(BatchProcessor[TextContext, DecoderModelInputs]):
                 for ctx in context_batch
             ]
         )
+
+    def label_positions(
+        self,
+        context_batch: Sequence[TextContext],
+        input_row_offsets: npt.NDArray[np.integer[Any]],
+    ) -> npt.NDArray[np.int64]:
+        """Returns each scored row's index into the batch's ragged tokens.
+
+        One entry per logits row this step gathers, in batch order, and that is
+        the count :meth:`BatchLabelScorer.score` pairs candidate groups against:
+
+        * a context that names
+          :attr:`~max.pipelines.context.TextContext.label_positions` and holds
+          its whole prompt in this step contributes one entry per named
+          position, in the order it named them;
+        * every other context contributes its last row, the next-token position
+          the sampler reads. That covers a context named nothing, and one whose
+          prompt is still being chunked or has already generated: only the step
+          that completes a prompt holds that prompt's answer rows, so a step
+          that cannot answer contributes one row and the scorer asks nothing of
+          it. A disagreement between positions and candidate groups is a
+          ``ValueError`` from ``_asked_labels`` naming the request and both
+          counts.
+
+        Args:
+            context_batch: The step's contexts in batch order.
+            input_row_offsets: Each context's start in the ragged token buffer.
+        """
+        rows: list[int] = []
+        for index, ctx in enumerate(context_batch):
+            start = int(input_row_offsets[index])
+            positions = ctx.label_positions
+            if (
+                positions is None
+                or ctx.tokens.actively_chunked
+                or ctx.tokens.generated_length != 0
+            ):
+                rows.append(start + ctx.tokens.active_length - 1)
+            else:
+                rows.extend(start + int(position) for position in positions)
+        return np.array(rows, dtype=np.int64)
 
     def process_outputs(
         self, outputs: Sequence[Buffer | object]
@@ -1011,6 +1085,7 @@ def _grouped_outputs(
             next_token_logits=outputs.next_token_logits,
             logits=outputs.logits,
             logit_offsets=outputs.logit_offsets,
+            label_logits=outputs.label_logits,
         )
     )
     if outputs.hidden_states is not None:
@@ -1036,6 +1111,7 @@ def _role_outputs(outputs: _GroupedOutputs) -> DecoderOutputs:
         next_token_logits=logits["next_token_logits"],
         logits=logits.get("logits"),
         logit_offsets=logits.get("logit_offsets"),
+        label_logits=logits.get("label_logits"),
         hidden_states=hidden_states,
         state=state,
     )
@@ -1652,6 +1728,9 @@ class ModuleV3DecoderPipelineModel(
             data_parallel_degree=self._data_parallel_degree,
             vision=self._decoder_vision_inputs(model_config),
             token_positions=token_position_type(
+                decoder_cls, model_config, self.device_refs[0]
+            ),
+            label_positions=label_positions_type(
                 decoder_cls, model_config, self.device_refs[0]
             ),
             batch_context_lengths=self._batch_context_length_types(

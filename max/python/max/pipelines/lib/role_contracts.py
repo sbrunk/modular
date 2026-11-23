@@ -101,6 +101,18 @@ class DecoderInputs(Generic[TensorT, _SignalT]):
     """How many logits per sequence to return, a CPU tensor of shape ``[1]``.
     """
 
+    label_positions: TensorT | None = None
+    """The rows a label-scoring step gathers, when the deployment declares them.
+
+    Shape ``[total_label_positions]``, ``int64``, holding each scored row's
+    index into :attr:`tokens` in batch order. A request that asks for several
+    positions of one sequence contributes several entries, so the operand, not
+    :attr:`return_n_logits`, decides how many logits rows a step returns and
+    where they sit. A batch that mixes scoring and generation requests names
+    one row per generating request. The counts per request live on the host:
+    the graph cannot name a different count per sequence.
+    """
+
     data_parallel_splits: TensorT | None = None
     """Each replica's first sequence, a CPU ``int64`` tensor of shape
     ``[data_parallel_degree + 1]``, under data parallelism.

@@ -310,8 +310,58 @@ class ModelOutputs:
     For data parallel models, the hs will be on the first gpu since it is replicated.
     """
 
+    label_logits: Buffer | None = None
+    """Logits of the rows a scoring step named, shape ``[total_label_positions, V]``.
+
+    A model that gathers its readout at the rows named by
+    :attr:`~max.pipelines.context.TextContext.label_positions` returns them
+    beside the next-token rows, so the sampler still reads one row per context
+    from :attr:`next_token_logits`. One context can hold any number of rows;
+    the counts live on the host, which named the positions. Present only for a
+    build that declares the ``label_positions`` operand.
+
+    It is last among the fields here because the paths that bind captured
+    buffers by position cannot name it: ``bind_captured_outputs`` refuses such a
+    capture, and the paths that read the graph by name, ``_to_model_outputs``
+    and ``_role_outputs``, carry it.
+    """
+
 
 _OutputTensorT = TypeVar("_OutputTensorT", default=Tensor)
+
+
+def bind_captured_outputs(buffers: Sequence[Buffer]) -> ModelOutputs:
+    """Binds a captured decode graph's outputs to the fields that hold them.
+
+    A capture returns its outputs as a list and drops the leaf names the graph
+    wrote them under, so only the leaf set this path can name from its count is
+    bound. A ModuleV3 decode graph in ``ReturnLogits.LAST_TOKEN`` and
+    ``ReturnHiddenStates.NONE`` mode returns one leaf, the next-token rows, and
+    that is what :attr:`ModelOutputs.logits` has always held here. A second leaf
+    is refused rather than guessed at: it is the hidden states of a
+    ``ReturnHiddenStates.LAST`` build or the ``label_logits`` of a decoder that
+    declares the ``label_positions`` operand, and the two bind to different
+    fields. Naming a scored row ``next_token_logits`` would hand the sampler the
+    readout rows of the positions the host named.
+
+    Args:
+        buffers: The capture's outputs, in the order the graph returns them.
+
+    Raises:
+        ValueError: If the capture returned more than the one output this path
+            can name.
+    """
+    if len(buffers) == 1:
+        return ModelOutputs(*buffers)
+    raise ValueError(
+        f"device graph capture returned {len(buffers)} outputs, and a capture "
+        "names none of them: this path holds only the next-token rows of a "
+        "ReturnLogits.LAST_TOKEN / ReturnHiddenStates.NONE decode graph. A "
+        "build that returns hidden states, or a decoder that declares the "
+        "label_positions operand and returns label_logits beside the "
+        "next-token rows, cannot be bound to ModelOutputs by position. Run "
+        "this model without device graph capture (--no-device-graph-capture)."
+    )
 
 
 @tree.dataclass
@@ -339,6 +389,15 @@ class ModuleV3Outputs(Generic[_OutputTensorT]):
 
     hidden_states: _OutputTensorT | None = None
     """Hidden states, when the model returns them."""
+
+    label_logits: _OutputTensorT | None = None
+    """Readout rows the host named, shape ``[total_label_positions, V]``.
+
+    Set when the model gathers at
+    :attr:`~max.pipelines.lib.role_contracts.DecoderInputs.label_positions`;
+    :attr:`next_token_logits` then keeps its one row per context. Last among the
+    tensor outputs, so it is the leaf a graph adds when the channel turns on.
+    """
 
     state: tuple[_OutputTensorT, ...] | None = None
     """The per-request state a registered decoder returns for its next step,
@@ -1706,6 +1765,7 @@ class ModuleV3PipelineModelWithKVCache(
             logits=logits.driver_tensor,
             next_token_logits=outputs.next_token_logits.driver_tensor,
             logit_offsets=_driver_buffer(outputs.logit_offsets),
+            label_logits=_driver_buffer(outputs.label_logits),
             hidden_states=_driver_buffer(outputs.hidden_states),
         )
 

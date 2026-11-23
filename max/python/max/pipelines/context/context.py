@@ -540,6 +540,26 @@ class TextContext:
     generation requests.
     """
 
+    label_positions: list[int] | None = field(default=None)
+    """Prompt positions this request asks scored, for a label-scoring request.
+
+    Positions count from the start of the request's own prompt, so a request
+    that packs several questions into one sequence can name one position per
+    question. Set alongside :attr:`label_token_id_groups`; an unset field scores
+    the last prompt position.
+    """
+
+    label_token_id_groups: list[list[int]] | None = field(default=None)
+    """Candidate token ids per named position, for a positions request.
+
+    One list per entry of :attr:`label_positions`, in the same order. A request
+    that names one position leaves this unset and keeps its candidates in
+    :attr:`label_token_ids`; a positions request sets both, holding the first
+    group in :attr:`label_token_ids` so a reader that expects one row of
+    candidates still recognises a scoring request.
+    :meth:`BatchLabelScorer.score` raises when the two counts disagree.
+    """
+
     dkv_cache_hint: bytes | None = field(default=None)
     """The Orchestrator's ``dkv_cache_hint`` for this request, as JSON bytes.
 

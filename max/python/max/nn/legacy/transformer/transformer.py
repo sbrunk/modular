@@ -329,6 +329,7 @@ def logits_outputs(
     logit_offsets: TensorValue | None,
     return_hidden_states: ReturnHiddenStates,
     hidden_states: Sequence[TensorValue],
+    label_logits: TensorValue | None = None,
 ) -> DecoderOutputs:
     """Names a decoder's outputs, in the order the graph returns them.
 
@@ -340,6 +341,10 @@ def logits_outputs(
         return_hidden_states: Which hidden states ``hidden_states`` holds,
             which names them.
         hidden_states: The hidden states :func:`extract_hs` returned.
+        label_logits: The readout rows of the positions the host named, when
+            the build declares the ``label_positions`` operand. It is the last
+            leaf of the ``logits`` group, after ``logit_offsets``, so a graph
+            without it keeps the leaves it returns today.
 
     Returns:
         The ``logits`` group, then a ``hidden_states`` group when there are
@@ -354,6 +359,7 @@ def logits_outputs(
             next_token_logits=next_token_logits,
             logits=logits,
             logit_offsets=logit_offsets,
+            label_logits=label_logits,
         )
     )
     if hidden_states:
