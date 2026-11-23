@@ -29,3 +29,20 @@ modular_py_test(
         requirement("numpy"),
     ],
 )
+
+# Staging leaves the graph as text, so the cases need no accelerator tag and
+# no kernel registration.
+modular_py_test(
+    name = "test_attention_segment_routing",
+    srcs = ["test_attention_segment_routing.py"],
+    deps = [
+        "//max/python/max:tensor",
+        "//max/python/max/driver",
+        "//max/python/max/dtype",
+        "//max/python/max/graph",
+        "//max/python/max/nn",
+        "//max/python/max/nn:core",
+        "//max/python/max/nn/kv_cache",
+        "//max/python/max/pipelines/architectures/qwen3_5_modulev3",
+    ],
+)

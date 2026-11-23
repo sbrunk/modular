@@ -326,6 +326,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
         *,
         vision: VisionInputs[Tensor] | None = None,
         position_ids: Tensor | None = None,
+        segment_ids: Tensor | None = None,
         capture_layers: Sequence[int] = (),
         subgraphs: bool = True,
     ) -> tuple[Tensor, list[Tensor]]:
@@ -342,6 +343,12 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
             position_ids: ``[3, total_seq_len]`` M-RoPE positions, replicated.
                 ``None`` keeps the static table, indexed by
                 ``cache_length + token_idx``.
+            segment_ids: ``[total_seq_len]`` int32 label per token, replicated,
+                for the full-attention layers to attend under a segment mask.
+                ``None`` leaves those layers on their mask variant. A caller
+                that builds the labels here has to run with
+                ``use_subgraphs = False``, since a layer subgraph cannot see a
+                tensor built in the enclosing graph.
             capture_layers: The layers whose output to return as well.
             subgraphs: Whether layers of one kind share a subgraph. A
                 speculative verify turns it off: what each linear layer
@@ -392,6 +399,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
                     freqs_cis,
                     input_row_offsets,
                     freq_row_ids,
+                    segment_ids,
                 )
                 attention_index += 1
             else:
@@ -467,6 +475,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
         state: RecurrentStateInputsPerDevice[Tensor, Tensor] | None,
         vision: VisionInputs[Tensor] | None = None,
         position_ids: Tensor | None = None,
+        segment_ids: Tensor | None = None,
     ) -> ModuleV3Outputs:
         """Runs the decoder and returns the logits it was built to."""
         config = self.config
@@ -482,6 +491,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
             state,
             vision=vision,
             position_ids=position_ids,
+            segment_ids=segment_ids,
             capture_layers=capture,
         )
         last_rows = input_row_offsets[1:] - 1

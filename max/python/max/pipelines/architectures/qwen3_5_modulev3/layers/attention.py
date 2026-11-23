@@ -33,12 +33,17 @@ import numpy as np
 from max import functional as F
 from max.dtype import DType
 from max.nn import Module
+from max.nn._graph_ops import (
+    rope_ragged_with_position_ids as _rope_ragged_with_position_ids,
+)
 from max.nn.attention_mask import MHAMaskVariant
 from max.nn.common_layers.kv_cache import PagedCacheValues
 from max.nn.common_layers.mesh_axis import TP
 from max.nn.kernels import (
     flash_attention_ragged,
+    flash_attention_ragged_gpu,
     fused_qk_ragged_rope,
+    rope_ragged,
     rope_split_store_ragged,
     store_k_cache_ragged,
     store_v_cache_ragged,
@@ -58,6 +63,12 @@ from .linear import (
 from .norm import RMSNorm, rms_norm_scaled
 
 __all__ = ["Qwen3_5Attention"]
+
+# ``max.nn.kernels`` wraps ``rope_ragged`` and the fused rope-and-store ops
+# and exports no ``Tensor`` wrapper for
+# ``rope_ragged_with_position_ids``. ``F.functional`` supplies that wrapper,
+# so each value in ``_attention_core`` stays a ``Tensor``.
+rope_ragged_with_position_ids = F.functional(_rope_ragged_with_position_ids)
 
 
 def _full_width_freqs(
@@ -101,6 +112,32 @@ def _rope_lanes_last(x: Tensor, n_heads: int, rotary_dim: int) -> Tensor:
     return F.concat([rest, interleaved], axis=-1)
 
 
+def _require_whole_row_labels(kv_params: KVCacheParams) -> None:
+    """Refuses labels on a cache that can hold a prefix this step did not write.
+
+    The labeled branch reads no KV cache, so it is right only for a row the
+    step wrote whole. A prefix-cache hit leaves ``cache_lengths`` above 0 for
+    that row, and the kernel attends over the rows it was handed: the keys an
+    earlier step stored are absent from the comparison.
+
+    Args:
+        kv_params: This layer's cache parameters.
+
+    Raises:
+        ValueError: If ``enable_prefix_caching`` is set.
+    """
+    if not kv_params.enable_prefix_caching:
+        return
+    raise ValueError(
+        "segment_ids run through flash_attention_ragged_gpu, which reads no"
+        " KV cache, so the layer can only attend a row this step wrote whole;"
+        " enable_prefix_caching lets a step resume pages an earlier step"
+        " wrote, and the kernel sees no key for those tokens. Serve labels"
+        " with prefix caching off, or teach this branch to read the cached"
+        " keys."
+    )
+
+
 def _attention_core(
     x: Tensor,
     qkv: tuple[ProjectionTensors, ProjectionTensors, ProjectionTensors],
@@ -118,8 +155,19 @@ def _attention_core(
     rotary_dim: int,
     scale: float,
     norm_eps: float,
+    segment_ids: Tensor | None,
+    mask_variant: MHAMaskVariant,
 ) -> Tensor:
-    """Runs one device's heads and returns its ``o_proj`` partial sums."""
+    """Runs one device's heads and returns its ``o_proj`` partial sums.
+
+    ``segment_ids`` holds each token's int32 label over the step. Labels come
+    from :meth:`Qwen3_5Attention.forward`, which follows
+    ``max/pipelines/architectures/lfm3/layers/attention.py:116-176``: with
+    them this runs the cache-less :func:`flash_attention_ragged_gpu`, the
+    ragged kernel that takes them, and without them it runs the paged
+    :func:`flash_attention_ragged`. ``mask_variant`` is the mask the chosen
+    kernel gets.
+    """
     total_seq_len = x.shape[0]
     q_dim = weight_rows(qkv[0].weight)
     kv_dim = weight_rows(qkv[1].weight)
@@ -182,16 +230,70 @@ def _attention_core(
             position_ids=freq_row_ids,
         )
 
-    attn_out = flash_attention_ragged(
-        kv_params,
-        input=query,
-        input_row_offsets=input_row_offsets,
-        kv_collection=kv_collection,
-        layer_idx=layer_idx,
-        mask_variant=MHAMaskVariant.CAUSAL_MASK,
-        scale=scale,
-        output_dtype=x.dtype,
-    ).reshape([total_seq_len, -1])
+    if segment_ids is not None:
+        # The paged kernel takes no labels, so this branch reads no cache:
+        # ``flash_attention_ragged_gpu`` takes Q, K and V as tensors, and
+        # ``segment_ids`` replaces the mask outright. K gets roped here, in
+        # registers, over the same lane order the fused store used and the same
+        # positions the cache rope used: ``freq_row_ids`` when the step brings
+        # it, the row's ``cache_lengths`` entry otherwise.
+        _require_whole_row_labels(kv_params)
+        if mask_variant is not MHAMaskVariant.NULL_MASK:
+            raise ValueError(
+                "segment_ids replaces the mask, and"
+                " flash_attention_ragged_gpu takes labels only under"
+                f" NULL_MASK; this layer asked for {mask_variant} with labels,"
+                " a mask the chosen kernel cannot apply"
+            )
+        if query.dtype != x.dtype:
+            raise ValueError(
+                "the two attention branches disagree about the output dtype:"
+                f" the paged one answers in x.dtype ({x.dtype}) and the"
+                f" label one answers in the query's dtype ({query.dtype},"
+                f" which follows the {kv_params.dtype} cache it was read"
+                " from). Serve labels with the cache dtype and the model"
+                " dtype equal, or cast this branch's output."
+            )
+        if freq_row_ids is not None:
+            # One uint32 per token, the operand the two cache ropes above
+            # already read, so a step whose positions restart mid-row ropes
+            # each token at its own row of ``freqs_cis``.
+            key_rows = rope_ragged_with_position_ids(
+                key,
+                freqs_cis.cast(query.dtype),
+                freq_row_ids,
+                interleaved=True,
+            ).rebind_mapping(key.mapping)
+        else:
+            key_rows = rope_ragged(
+                key,
+                input_row_offsets,
+                kv_collection.cache_lengths,
+                freqs_cis.cast(query.dtype),
+                interleaved=True,
+            ).rebind_mapping(key.mapping)
+        attn_out = flash_attention_ragged_gpu(
+            query,
+            key_rows,
+            value,
+            input_row_offsets=input_row_offsets,
+            max_seq_len=kv_collection.max_prompt_length,
+            mask_variant=mask_variant,
+            scale=scale,
+            segment_ids=segment_ids,
+        )
+    else:
+        attn_out = flash_attention_ragged(
+            kv_params,
+            input=query,
+            input_row_offsets=input_row_offsets,
+            kv_collection=kv_collection,
+            layer_idx=layer_idx,
+            mask_variant=mask_variant,
+            scale=scale,
+            output_dtype=x.dtype,
+        )
+    attn_out = attn_out.reshape([total_seq_len, -1])
     return matmul(attn_out * F.sigmoid(gate), o_proj)
 
 
@@ -258,8 +360,10 @@ class Qwen3_5Attention(Module[..., Tensor]):
         freqs_cis: Tensor,
         input_row_offsets: Tensor,
         freq_row_ids: Tensor | None = None,
+        segment_ids: Tensor | None = None,
+        mask_variant: MHAMaskVariant = MHAMaskVariant.CAUSAL_MASK,
     ) -> Tensor:
-        """Attends over the whole causal context.
+        """Attends over the row, or over the step's labeled segments.
 
         Args:
             x: The normed hidden states, ``[total_seq_len, hidden_size]``.
@@ -269,8 +373,30 @@ class Qwen3_5Attention(Module[..., Tensor]):
                 ``freq_row_ids``, by token.
             input_row_offsets: The ragged row offsets.
             freq_row_ids: ``[1, total_seq_len]`` row of ``freqs_cis`` per
-                token, when the table is per token (M-RoPE). ``None`` leaves
-                the kernels on ``cache_length + token_idx``.
+                token, when the table is per token (M-RoPE) or when a caller
+                numbers the step's tokens itself. ``None`` leaves the kernels
+                on ``cache_length + token_idx``.
+            segment_ids: ``[total_seq_len]`` int32 label per token, where -1 is
+                visible to every token of the row and any other label is
+                visible inside its own segment. ``None`` runs the paged
+                :func:`flash_attention_ragged`; labels run the cache-less
+                :func:`flash_attention_ragged_gpu`, which reads no cache.
+            mask_variant: The mask the chosen kernel gets.
+
+        Labels come with two preconditions, and this build enforces the first.
+        A labeled step has to be one whole row: ``enable_prefix_caching`` lets
+        a step resume a prefix another step wrote, and the cache-less kernel
+        sees no key for tokens an earlier step stored. The second belongs to
+        the caller: a step that traces
+        labels inside a layer subgraph cannot see the label tensor built in the
+        enclosing graph, so a caller that builds labels outside the layer sets
+        ``use_subgraphs = False``, the way a speculative verify and a
+        folded-weight build do.
+
+        Raises:
+            ValueError: When labels arrive with prefix caching on, with a mask
+                the cache-less kernel cannot pair with them, or from a cache
+                dtype that leaves the two branches' outputs unequal.
         """
         core = functools.partial(
             _attention_core,
@@ -279,6 +405,8 @@ class Qwen3_5Attention(Module[..., Tensor]):
             rotary_dim=self.rotary_dim,
             scale=self.scale,
             norm_eps=self.norm_eps,
+            segment_ids=segment_ids,
+            mask_variant=mask_variant,
         )
         return F.call_on_mesh(
             core,
