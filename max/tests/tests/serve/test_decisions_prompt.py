@@ -282,12 +282,16 @@ def test_choice_options_must_be_distinct_and_bounded() -> None:
         adapter.validate_python(question(["a", "b\nc"]))
     with pytest.raises(ValidationError, match="at least 2"):
         adapter.validate_python(question(["a"]))
-    with pytest.raises(ValidationError, match="at most 26"):
-        adapter.validate_python(question([f"o{i}" for i in range(27)]))
-    adapter.validate_python(question([f"o{i}" for i in range(26)]))
+    # The schema only bounds the queue: a format narrower than this answers
+    # through the request flow's capacity check, not here.
+    with pytest.raises(ValidationError, match="at most 1024"):
+        adapter.validate_python(question([f"o{i}" for i in range(1025)]))
+    adapter.validate_python(question([f"o{i}" for i in range(200)]))
 
 
-def test_score_levels_are_bounded_to_ten() -> None:
+def test_score_levels_are_queued_past_the_old_ten() -> None:
+    """Eleven levels reach the server; the serving format refuses them later."""
+
     def levels(count: int) -> dict[str, Any]:
         return {
             "id": "s",
@@ -296,6 +300,6 @@ def test_score_levels_are_bounded_to_ten() -> None:
             "levels": [f"l{i}" for i in range(count)],
         }
 
-    _request(questions=[levels(10)])
-    with pytest.raises(ValidationError, match="at most 10"):
-        _request(questions=[levels(11)])
+    _request(questions=[levels(11)])
+    with pytest.raises(ValidationError, match="at most 1024"):
+        _request(questions=[levels(1025)])

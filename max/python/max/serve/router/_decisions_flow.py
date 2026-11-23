@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import HTTPException, Request
 from max.pipelines.context.exceptions import InputError
 from max.serve.pipelines.llm import TokenGeneratorPipeline
-from max.serve.router._decision_format import DecisionFormat
+from max.serve.router._decision_format import DecisionFormat, OptionLimits
 from max.serve.router._decisions_prompt import QuestionView
 from max.serve.router._decisions_scoring import (
     DecisionRequestError,
@@ -88,6 +88,45 @@ async def decision_errors(request: Request, route: str) -> AsyncIterator[None]:
         ) from e
 
 
+def check_capacity(
+    limits: OptionLimits, items: Sequence[tuple[str, QuestionView]]
+) -> None:
+    """Refuses a question wider than the format serving it can label.
+
+    A request body is validated before the server knows which prompt format
+    will answer it, so the schemas admit a question this model's format cannot
+    render. ``render_request`` compares every question against
+    :attr:`~max.serve.router._decision_format.DecisionFormat.limits` before it
+    encodes one row.
+
+    Args:
+        limits: What the serving format can answer per question.
+        items: Each question's id and view.
+
+    Raises:
+        DecisionRequestError: If a question names more candidates than the
+            format can label, or the request names more questions than it
+            can score. The message names the question.
+    """
+    if limits.questions is not None and len(items) > limits.questions:
+        raise DecisionRequestError(
+            f"this server answers at most {limits.questions} questions in one "
+            f"request, got {len(items)}"
+        )
+    ceilings: dict[str, int] = {
+        "choice": limits.choice_options,
+        "score": limits.score_levels,
+    }
+    for question_id, view in items:
+        ceiling = ceilings.get(view.kind)
+        if ceiling is not None and len(view.names) > ceiling:
+            raise DecisionRequestError(
+                f"question {question_id!r}: this model answers a "
+                f"{view.kind} question with at most {ceiling} candidates, "
+                f"this one names {len(view.names)}"
+            )
+
+
 async def render_request(
     request: Request,
     route: str,
@@ -128,6 +167,7 @@ async def render_request(
                 f"prompt_format_version {prompt_format_version} is not "
                 f"served, this server uses version {decision_format.version}"
             )
+        check_capacity(decision_format.limits, questions)
         encoded = await decision_format.encode(
             tokenizer, state, questions, chat_template_kwargs
         )

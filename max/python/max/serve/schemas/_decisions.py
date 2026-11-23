@@ -36,9 +36,16 @@ from pydantic import (
     model_validator,
 )
 
-# TODO(PRDT-1041): Each label must be one token after the prompt, which caps a
-# choice at 26 options and a score at 10 levels. Longer lists need
-# multi-character labels, validated by ``resolve_label_token_ids``.
+# TODO(PRDT-1041): The chat and decider formats label an option with one
+# character of these alphabets, and each label must be one token after the
+# prompt, so those two formats carry the alphabet's size as their option
+# ceiling. That ceiling is a property of the prompt wording, not of decisions:
+# a format that keys its answers some other way (the caller's own option names,
+# or rows of a wide readout head) declares its own in
+# :attr:`max.serve.router._decision_format.DecisionFormat.limits`, which
+# ``max.serve.router._decisions_flow.render_request`` enforces once the format
+# is known. MAX_CANDIDATES_PER_REQUEST bounds only how many candidates one
+# request body may queue before that check runs.
 CHOICE_LABELS = string.ascii_uppercase
 """Choice options are labeled ``A`` to ``Z`` in order."""
 
@@ -46,14 +53,25 @@ SCORE_LABELS = string.digits
 """Score levels are labeled ``0`` to ``9`` in order."""
 
 MAX_CHOICE_OPTIONS = len(CHOICE_LABELS)
+"""Named options the choice alphabet can give a letter to."""
+
 MAX_SCORE_LEVELS = len(SCORE_LABELS)
+"""Ordered levels the score alphabet can give a digit to."""
+
+MAX_CANDIDATES_PER_REQUEST = 1024
+"""Candidates one request body may name, whatever format answers it.
+
+A lettered format caps a question far below this, and the request flow applies
+that cap once the format is known. The schema only refuses a body too large to
+carry any answer."""
 
 QuestionKind = Literal["choice", "score", "yes_no"]
 
 MAX_QUESTIONS = 64
 """Questions per request. Each question is admitted as its own scoring
 request (several for a decider ``score`` question), so this bounds the work a
-single request body can queue."""
+single request body can queue. A format may cap it lower, never higher."""
+
 
 # Objects and arrays are rendered into the prompt as compact JSON. Other JSON
 # scalars (numbers, booleans, null) are not accepted.
@@ -110,7 +128,13 @@ class DecisionOption(BaseModel):
 
 
 class DecisionChoiceQuestion(BaseModel):
-    """Pick one of 2 to 26 named options, labeled ``A`` to ``Z`` in order."""
+    """Pick one of the named options.
+
+    A chat or decider server can offer at most ``MAX_CHOICE_OPTIONS`` options,
+    because it labels each one with a letter; a server whose answer labels are
+    not vocabulary letters is capped by its own format instead, and answers a
+    wider question with a 400 naming it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -118,7 +142,7 @@ class DecisionChoiceQuestion(BaseModel):
     type: Literal["choice"]
     question: RequiredDecisionText
     options: list[DecisionOption] = Field(
-        min_length=2, max_length=MAX_CHOICE_OPTIONS
+        min_length=2, max_length=MAX_CANDIDATES_PER_REQUEST
     )
 
     @model_validator(mode="after")
@@ -131,7 +155,12 @@ class DecisionChoiceQuestion(BaseModel):
 
 
 class DecisionScoreQuestion(BaseModel):
-    """Rate on 2 to 10 described levels, labeled ``0`` to ``9`` in order."""
+    """Rate on 2 or more described levels.
+
+    A chat or decider server can offer at most ``MAX_SCORE_LEVELS`` levels,
+    because it labels each one with a digit; a server whose answer labels are
+    not vocabulary digits is capped by its own format instead.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -139,7 +168,7 @@ class DecisionScoreQuestion(BaseModel):
     type: Literal["score"]
     question: RequiredDecisionText
     levels: list[RequiredDecisionText] = Field(
-        min_length=2, max_length=MAX_SCORE_LEVELS
+        min_length=2, max_length=MAX_CANDIDATES_PER_REQUEST
     )
 
 

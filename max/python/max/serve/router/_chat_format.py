@@ -29,6 +29,7 @@ from max.pipelines.modeling.types import (
     TextGenerationRequestMessage,
 )
 from max.serve.pipelines._label_scoring import LabelScoringOutput
+from max.serve.router._decision_format import OptionLimits
 from max.serve.router._decisions_prompt import (
     QuestionScores,
     QuestionView,
@@ -46,7 +47,12 @@ from max.serve.router._decisions_scoring import (
     EncodedRow,
 )
 from max.serve.schemas._chat_template import without_thinking
-from max.serve.schemas._decisions import DecisionText
+from max.serve.schemas._decisions import (
+    MAX_CHOICE_OPTIONS,
+    MAX_QUESTIONS,
+    MAX_SCORE_LEVELS,
+    DecisionText,
+)
 
 CHAT_FORMAT_VERSION = 1
 """Version of the chat prompt wording. Any change needs a new version."""
@@ -95,6 +101,20 @@ class ChatFormat:
     """Renders each question as one chat turn and scores a single row."""
 
     version: ClassVar[int] = CHAT_FORMAT_VERSION
+
+    @property
+    def limits(self) -> OptionLimits:
+        """How wide a question the lettered chat wording can answer.
+
+        One option per letter of ``CHOICE_LABELS`` and one level per digit of
+        ``SCORE_LABELS``: the alphabets are the ceiling, because each label has
+        to be one distinct token after the prompt.
+        """
+        return OptionLimits(
+            choice_options=MAX_CHOICE_OPTIONS,
+            score_levels=MAX_SCORE_LEVELS,
+            questions=MAX_QUESTIONS,
+        )
 
     async def encode(
         self,

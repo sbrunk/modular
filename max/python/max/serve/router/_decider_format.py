@@ -38,6 +38,7 @@ from max.pipelines.modeling.types import LabelScoringTokenizer
 from max.serve.pipelines._label_scoring import LabelScoringOutput
 from max.serve.router._decider_prompt import (
     LETTERS,
+    MAX_DECIDER_OPTIONS,
     DeciderSettings,
     answer_type,
     combine_rows,
@@ -47,6 +48,7 @@ from max.serve.router._decider_prompt import (
     render_state,
     state_prefix,
 )
+from max.serve.router._decision_format import OptionLimits
 from max.serve.router._decisions_prompt import (
     QuestionScores,
     QuestionView,
@@ -59,7 +61,10 @@ from max.serve.router._decisions_scoring import (
     EncodedQuestion,
     EncodedRow,
 )
-from max.serve.schemas._decisions import DecisionText
+from max.serve.schemas._decisions import (
+    MAX_QUESTIONS,
+    DecisionText,
+)
 
 DECIDER_FORMAT_VERSION = 2
 """Version of the decider prompt wording. Any change needs a new version."""
@@ -101,6 +106,20 @@ class DeciderFormat:
     """Renders questions in the decider layout and combines per-level rows."""
 
     version: ClassVar[int] = DECIDER_FORMAT_VERSION
+
+    @property
+    def limits(self) -> OptionLimits:
+        """How wide a question the decider wording can answer.
+
+        The decider prompt labels options ``A`` to ``J``, one letter per option
+        whether the levels of a score question share a row or not, so ten
+        candidates is the ceiling whatever the request asks for.
+        """
+        return OptionLimits(
+            choice_options=MAX_DECIDER_OPTIONS,
+            score_levels=MAX_DECIDER_OPTIONS,
+            questions=MAX_QUESTIONS,
+        )
 
     def __init__(self, settings: DeciderSettings) -> None:
         self._settings = settings
