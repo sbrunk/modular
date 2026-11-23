@@ -189,7 +189,12 @@ def gated_delta_conv1d_fwd(
             caller needs no separate SiLU launch.
 
     Returns:
-        The conv output, ``[total_seq_len, conv_dim]``.
+        The conv output, ``[total_seq_len, conv_dim]``. The kernel walks the
+        tokens of every ``input_row_offsets`` span, so the rows outside them
+        are left unwritten and hold whatever the output buffer held. A caller
+        that convolves one span of a wider array reads its own rows back with
+        a select, not by adding a 0/1 mask over this output: multiplying a
+        non-finite unwritten row by ``0`` still yields a non-finite row.
 
     The following example convolves a ragged batch of two sequences, of
     lengths 3 and 2, on a GPU. The sequences read and update conv-state
@@ -421,7 +426,13 @@ def gated_delta_recurrence_fwd(
         input_row_offsets: The ``[batch_size + 1]`` uint32 ragged offsets.
 
     Returns:
-        The recurrence output, ``[total_seq_len, value_dim]``.
+        The recurrence output, ``[total_seq_len, value_dim]``. The kernel walks
+        ``range(sequence_start_flat_idx, sequence_end_flat_idx)`` per batch
+        item, so rows outside the spans are left unwritten and hold whatever
+        the output buffer held — an empty span leaves the whole output
+        untouched. Assemble per-span calls with a select, for the reason
+        :func:`gated_delta_conv1d_fwd` states: a masked sum carries an
+        unwritten row's contents into every row of the step.
     """
     device = qkv_conv_output.device
     total_seq_len = qkv_conv_output.shape[0]
