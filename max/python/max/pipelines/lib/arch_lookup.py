@@ -333,10 +333,14 @@ class SupportedArchitecture:
     ``{InputModality.TEXT, InputModality.IMAGE}`` for vision-language models.
     """
 
-    required_arguments: dict[str, bool | int | float] = field(
+    required_arguments: dict[str, bool | int | float | str] = field(
         default_factory=dict
     )
-    """A dictionary specifying required values for PipelineConfig options."""
+    """A dictionary specifying required values for PipelineConfig options.
+
+    Values are the option's own type: booleans for the on/off runtime flags,
+    numbers for sizes, strings for named options such as
+    ``state_pool_dtype``."""
 
     checkpoints_recurrent_state: bool = False
     """Whether this architecture carries recurrent state a prefix hit must resume.

@@ -1,0 +1,19 @@
+load("//bazel:api.bzl", "modular_py_test")
+
+package(default_visibility = [
+    "//:__pkg__",
+    "//max/tests:__subpackages__",
+    "//oss/modular/max/tests:__subpackages__",
+])
+
+# Registration is a table check: the modules import, the pins are read, and
+# nothing compiles.
+modular_py_test(
+    name = "test_registration",
+    srcs = ["test_registration.py"],
+    deps = [
+        "//max/python/max/pipelines/architectures/qwen3_5_decider",
+        "//max/python/max/pipelines/lib",
+        "//max/python/max/pipelines/modeling",
+    ],
+)
