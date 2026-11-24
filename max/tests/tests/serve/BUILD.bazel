@@ -52,6 +52,7 @@ modular_py_test(
         "//max/python/max/pipelines/architectures/hy_v4",
         "//max/python/max/pipelines/architectures/kimik2_5",
         "//max/python/max/pipelines/architectures/qwen3_5",
+        "//max/python/max/pipelines/architectures/qwen3_5_decider",
         "//max/python/max/pipelines/context",
         "//max/python/max/pipelines/kv_cache",
         "//max/python/max/pipelines/lib",

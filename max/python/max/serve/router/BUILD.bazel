@@ -6,6 +6,7 @@ modular_py_library(
     name = "router",
     srcs = glob(["*.py"]),
     deps = [
+        "//max/python/max/pipelines/architectures/qwen3_5_decider",
         "//max/python/max/pipelines/context",
         "//max/python/max/pipelines/lib",
         "//max/python/max/pipelines/lora",

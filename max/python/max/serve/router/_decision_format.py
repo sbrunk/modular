@@ -11,13 +11,15 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""Prompt formats for decisions: chat or decider.
+"""Prompt formats for decisions: joint v4, decider or chat.
 
 A format decides how a question becomes scoring rows
 (:meth:`DecisionFormat.encode`) and how row scores become option
 probabilities (:meth:`DecisionFormat.scores`). The server picks one at
-startup from the checkpoint: a model that ships ``decider_config.json`` is a
-decider, any other is served with its chat template.
+startup from the checkpoint's own files: a model that ships
+``joint_config.json`` declaring joint protocol v4 gets the joint readout
+format, a model that ships ``decider_config.json`` is a decider, and any
+other is served with its chat template.
 """
 
 from __future__ import annotations
@@ -100,19 +102,27 @@ def detect_decision_format(model_path: str) -> DecisionFormat:
         model_path: A local checkpoint directory or a Hub repo id.
 
     Returns:
-        The decider format if the checkpoint ships ``decider_config.json``,
-        else the chat format.
+        The joint v4 format if the checkpoint ships ``joint_config.json``
+        declaring protocol v4, the decider format if it ships
+        ``decider_config.json``, else the chat format.
     """
-    # ``_chat_format`` and ``_decider_format`` import OptionLimits from this
-    # module, so importing them inside the function keeps the dependency
-    # one-directional.
+    # ``_chat_format``, ``_decider_format`` and ``_joint_v4_format`` import
+    # OptionLimits from this module, so importing them inside the function
+    # keeps the dependency one-directional.
     from max.serve.router._chat_format import ChatFormat
     from max.serve.router._decider_format import (
         DeciderFormat,
         find_decider_settings,
     )
+    from max.serve.router._joint_v4_format import (
+        JointV4Format,
+        find_joint_v4_settings,
+    )
 
-    settings = find_decider_settings(model_path)
-    if settings is None:
+    joint = find_joint_v4_settings(model_path)
+    if joint is not None:
+        return JointV4Format(joint)
+    decider = find_decider_settings(model_path)
+    if decider is None:
         return ChatFormat()
-    return DeciderFormat(settings)
+    return DeciderFormat(decider)
