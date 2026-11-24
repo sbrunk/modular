@@ -277,7 +277,11 @@ class EPLBProfile(GraphGroup[str, tuple[BufferType, ...]]):
 
 
 LogitsName = Literal[
-    "next_token_logits", "logits", "logit_offsets", "label_logits"
+    "next_token_logits",
+    "logits",
+    "logit_offsets",
+    "label_logits",
+    "label_hidden",
 ]
 """The outputs a :class:`Logits` group can hold."""
 
@@ -290,8 +294,10 @@ class Logits(GraphGroup[LogitsName, _TensorT]):
     it reads the ones it asked for. ``label_logits`` follows a different rule:
     it is present when the decoder declared the ``label_positions`` operand and
     this batch's requests named rows to score, so its row count comes from the
-    host. It is the last leaf of the group, and a build that names no rows
-    returns the leaves it returned before.
+    host. ``label_hidden`` follows the same rule and the same rows, the gather
+    before the readout instead of after it, and only for a build that declares
+    it. ``label_hidden`` is the last leaf of the group, and a build that names
+    no rows returns the leaves it returned before.
     """
 
     kind = "logits"
@@ -303,6 +309,7 @@ class Logits(GraphGroup[LogitsName, _TensorT]):
         logits: _TensorT | None = None,
         logit_offsets: _TensorT | None = None,
         label_logits: _TensorT | None = None,
+        label_hidden: _TensorT | None = None,
     ) -> None:
         super().__init__()
         if next_token_logits is not None:
@@ -313,6 +320,8 @@ class Logits(GraphGroup[LogitsName, _TensorT]):
             self["logit_offsets"] = logit_offsets
         if label_logits is not None:
             self["label_logits"] = label_logits
+        if label_hidden is not None:
+            self["label_hidden"] = label_hidden
 
 
 class HiddenStates(GraphGroup[str, tuple[_TensorT, ...]]):

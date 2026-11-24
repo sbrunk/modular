@@ -42,9 +42,14 @@ from max.driver import CPU, Buffer
 from max.dtype import DType
 from max.engine import InferenceSession
 from max.graph import DeviceRef, Graph, TensorType
+from max.nn.legacy.graph_groups import Logits
 from max.pipelines.architectures.qwen3_5_modulev3.qwen3_5 import (
     Qwen3_5Decoder,
     Qwen3_5TextModel,
+)
+from max.pipelines.lib.interfaces.pipeline_model import (
+    ModelOutputs,
+    ModuleV3Outputs,
 )
 from max.pipelines.lib.module_registration import label_positions_type
 from max.pipelines.lib.role_contracts import DecoderInputs
@@ -139,6 +144,25 @@ def test_the_donor_declares_no_label_operand() -> None:
     assert Qwen3_5Decoder.label_positions_declared is False
     assert "label_positions" in Qwen3_5Decoder.input_layout
     assert label_positions_type(Qwen3_5Decoder, object(), DEVICE) is None
+
+
+def test_the_hidden_channel_offs_by_default_and_ends_the_structs() -> None:
+    """``label_hidden`` exists, follows ``label_logits``, and no stock model
+    emits it: the gather already runs for the readout, so the channel only
+    costs a leaf when a build asks for the rows themselves."""
+    assert Qwen3_5TextModel.label_hidden_declared is False
+    model_fields = [field.name for field in fields(ModuleV3Outputs)]
+    assert (
+        model_fields.index("label_hidden")
+        == model_fields.index("label_logits") + 1
+    )
+    buffer_fields = [field.name for field in fields(ModelOutputs)]
+    assert (
+        buffer_fields.index("label_hidden")
+        == buffer_fields.index("label_logits") + 1
+    )
+    group = Logits(next_token_logits=None, label_hidden="leaf")
+    assert group["label_hidden"] == "leaf"
 
 
 def test_a_label_scoring_deployment_declares_the_operand() -> None:

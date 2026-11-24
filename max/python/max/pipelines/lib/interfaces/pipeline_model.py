@@ -319,11 +319,21 @@ class ModelOutputs:
     from :attr:`next_token_logits`. One context can hold any number of rows;
     the counts live on the host, which named the positions. Present only for a
     build that declares the ``label_positions`` operand.
+    """
 
-    It is last among the fields here because the paths that bind captured
-    buffers by position cannot name it: ``bind_captured_outputs`` refuses such a
-    capture, and the paths that read the graph by name, ``_to_model_outputs``
-    and ``_role_outputs``, carry it.
+    label_hidden: Buffer | None = None
+    """Hidden-state rows of the positions a scoring step named, shape
+    ``[total_label_positions, hidden_size]``.
+
+    The same gather :attr:`label_logits` reads, taken one stage before the
+    head: a host that scores a second head over the rows themselves -- a span
+    head, say -- reads these without a second pass. Present only for a build
+    that declares the channel beside the ``label_positions`` operand.
+
+    They are last among the fields here because the paths that bind captured
+    buffers by position cannot name them: ``bind_captured_outputs`` refuses
+    such a capture, and the paths that read the graph by name,
+    ``_to_model_outputs`` and ``_role_outputs``, carry them.
     """
 
 
@@ -395,8 +405,18 @@ class ModuleV3Outputs(Generic[_OutputTensorT]):
 
     Set when the model gathers at
     :attr:`~max.pipelines.lib.role_contracts.DecoderInputs.label_positions`;
-    :attr:`next_token_logits` then keeps its one row per context. Last among the
-    tensor outputs, so it is the leaf a graph adds when the channel turns on.
+    :attr:`next_token_logits` then keeps its one row per context. The tensor
+    outputs end with the two named-row channels: :attr:`label_logits`, then
+    :attr:`label_hidden` where the model also returns the gather before the
+    head, the leaves a graph adds when those channels turn on.
+    """
+
+    label_hidden: _OutputTensorT | None = None
+    """The gather of :attr:`label_logits` before the head, shape
+    ``[total_label_positions, hidden_size]``.
+
+    Declared by a model that serves a second readout over the named rows as
+    themselves; ``None`` leaves the leaf off the graph entirely.
     """
 
     state: tuple[_OutputTensorT, ...] | None = None
@@ -1766,6 +1786,7 @@ class ModuleV3PipelineModelWithKVCache(
             next_token_logits=outputs.next_token_logits.driver_tensor,
             logit_offsets=_driver_buffer(outputs.logit_offsets),
             label_logits=_driver_buffer(outputs.label_logits),
+            label_hidden=_driver_buffer(outputs.label_hidden),
             hidden_states=_driver_buffer(outputs.hidden_states),
         )
 

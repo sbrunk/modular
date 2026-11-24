@@ -240,6 +240,14 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
     DeltaNet, with a recurrent state.
     """
 
+    label_hidden_declared = False
+    """Whether a named-row scoring step also returns the gathered hidden rows
+    beside the readout, in the ``label_hidden`` channel. A model that serves
+    a second readout over the rows themselves turns it on; the gather
+    :attr:`label_logits` already computes is then output one stage earlier
+    instead of being recomputed.
+    """
+
     def __init__(self, config: Qwen3_5Config) -> None:
         if config.model_quantization_encoding is not None:
             raise NotImplementedError(
@@ -525,14 +533,20 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
         last_rows = input_row_offsets[1:] - 1
         last = self.logits(F.gather(h, last_rows, axis=0))
         label_logits: Tensor | None = None
+        label_hidden: Tensor | None = None
         if label_positions is not None:
-            label_logits = self.logits(
-                F.gather(
-                    h,
-                    self.scored_rows(input_row_offsets, label_positions),
-                    axis=0,
-                )
+            scored = F.gather(
+                h,
+                self.scored_rows(input_row_offsets, label_positions),
+                axis=0,
             )
+            label_logits = self.logits(scored)
+            if self.label_hidden_declared:
+                # The normed rows, one stage before the head: the released
+                # second heads read ``last_hidden_state``, which is what
+                # :meth:`logits` feeds its head, not the residual stream
+                # ``hidden_states`` returns.
+                label_hidden = self.norm(scored).local_shards[0]
         logits: Tensor | None = None
         offsets: Tensor | None = None
         if config.return_logits == ReturnLogits.ALL:
@@ -565,6 +579,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
             logits=logits,
             logit_offsets=offsets,
             label_logits=label_logits,
+            label_hidden=label_hidden,
             hidden_states=None if hidden is None else hidden.local_shards[0],
         )
 

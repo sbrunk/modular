@@ -303,6 +303,13 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
         # which ropes Q through fused_qk_ragged_rope(position_ids=...) and K
         # through rope_ragged_with_position_ids, both per token.
         super().__init__(config)
+        # A checkpoint that ships the Locate span head gets the ``label_hidden``
+        # channel: the route that answers Locate reads the gathered rows
+        # themselves, and the only affordable place to gather them is the pass
+        # that already computed them. A checkpoint without the head stays a
+        # plain two-channel graph.
+        if not config.checkpoint_tensor_names.isdisjoint(_LEFT_OUT_NAMES):
+            self.label_hidden_declared = True
         # The donor's block builds each mixer with the checkpoint's quantisation
         # scheme for that layer: ``scheme`` and ``attn_quant`` at
         # ``qwen3_5.py:143-144``, ``quant_config=attn_quant`` at

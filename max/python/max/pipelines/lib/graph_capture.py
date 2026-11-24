@@ -178,6 +178,7 @@ def _release_graph_capture_outputs_to_borrowed(
         "next_token_logits",
         "logit_offsets",
         "label_logits",
+        "label_hidden",
         "hidden_states",
         "num_accepted_draft_tokens",
         "next_tokens",

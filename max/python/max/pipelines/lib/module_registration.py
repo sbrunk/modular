@@ -1086,6 +1086,7 @@ def _grouped_outputs(
             logits=outputs.logits,
             logit_offsets=outputs.logit_offsets,
             label_logits=outputs.label_logits,
+            label_hidden=outputs.label_hidden,
         )
     )
     if outputs.hidden_states is not None:
@@ -1112,6 +1113,7 @@ def _role_outputs(outputs: _GroupedOutputs) -> DecoderOutputs:
         logits=logits.get("logits"),
         logit_offsets=logits.get("logit_offsets"),
         label_logits=logits.get("label_logits"),
+        label_hidden=logits.get("label_hidden"),
         hidden_states=hidden_states,
         state=state,
     )
