@@ -1,4 +1,4 @@
-load("//bazel:api.bzl", "modular_py_test")
+load("//bazel:api.bzl", "modular_py_test", "requirement")
 
 package(default_visibility = [
     "//:__pkg__",
@@ -26,5 +26,19 @@ modular_py_test(
         "//max/python/max/pipelines/architectures/qwen3_5_decider",
         "//max/python/max/pipelines/lib",
         "//max/python/max/pipelines/modeling",
+    ],
+)
+
+# The fold's ops run on CPU tensors: no checkpoint, no compiled decoder
+# graph, no accelerator. The served decision-vs-reference comparison is
+# the GPU-side counterpart of the exactness these cases pin.
+modular_py_test(
+    name = "test_adapter_fold",
+    srcs = ["test_adapter_fold.py"],
+    deps = [
+        "//max/python/max:tensor",
+        "//max/python/max/dtype",
+        "//max/python/max/pipelines/architectures/qwen3_5_decider",
+        requirement("numpy"),
     ],
 )

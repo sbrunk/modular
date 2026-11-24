@@ -61,6 +61,7 @@ Deltas layered on top of the donor:
 from __future__ import annotations
 
 import logging
+import os
 from collections import Counter
 from collections.abc import Iterable
 from typing import Any, ClassVar
@@ -129,19 +130,35 @@ False. Flipping that flag binds the tensors as parameters and this excuse stops
 matching, so a rename in :mod:`.weight_adapters` that strands one of them fails
 the audit."""
 
-ADAPTER_FOLD_ENABLED = False
-"""The gate for folding the Locate adapter into this graph.
+ADAPTER_FOLD_ENABLED = os.environ.get("DECIDER_ADAPTER_FOLD", "1").lower() in (
+    "1",
+    "true",
+    "on",
+)
+"""The gate for folding the Locate adapter into this graph, on unless the
+environment names ``0``, ``off`` or ``false``. A checkpoint with no
+``*.lora_a`` tensors has nothing to fold and builds no sites whatever this
+says.
 
-:mod:`.layers.adapter` implements the fold: 248 ``(lora_a, lora_b)`` pairs plus
-the marker row, the delta ops of ``LoRALinear.forward``, and a per-row gate the
-graph derives from the ``<|locate|>`` token. The pairs bind by name and trace as
-graph weights; the build stopped at ``gate.unsqueeze(-1)`` because a value
-computed in the enclosing graph cannot be used inside one of the donor's
-layer subgraphs. :meth:`Qwen3_5DeciderTextModel.__init__` traces the blocks inline
-for a folded build, which is the route a speculative verify takes for the same
-reason. The decisions path runs with this off. ``LOCATE_LORA_NOTES.md`` records
-the diagnosis, the numbers, and the 120 gated-DeltaNet sites whose delta no
-wrapped ``forward`` runs.
+:mod:`.layers.adapter` implements the fold: 248 ``(lora_a, lora_b)`` pairs,
+the marker row, the delta ops of ``LoRALinear.forward``, and a per-token gate
+:meth:`Qwen3_5DeciderDecoder.forward` derives in the graph from the
+``<|locate|>`` token, so a decisions row carries a gate of exact 0.0 and
+:func:`~.layers.adapter.with_delta` returns its base bit for bit. A folded
+build traces the donor's blocks inline (``use_subgraphs = False``), the route
+a speculative verify takes for the same reason: MAX refuses to move a tensor
+built in the enclosing graph -- the gate is one -- into a layer subgraph.
+Every mixer family the tower uses has a body that reads the gate:
+:class:`~.layers.attention.DeciderAttention`, :class:`~.layers.mlp.LocateMLP`
+and :class:`~.layers.deltanet.LocateGatedDeltaNet`, and
+:func:`~.layers.adapter.install` refuses a family whose sites all lack one.
+Off, the pairs load, the audit excuses them by suffix, and every step runs
+the plain backbone.
+
+A folded build costs the adapter's float32 tensors in device memory: on one
+RTX 4090 at ``--device-memory-utilization 0.6`` the KV cache shrinks from
+1.97 GiB to 828 MiB, about 1.2 GiB for the 497 tensors, and the step pays
+248 rank-64 delta pairs whose gate is an exact zero on a decisions row.
 """
 
 _LEFT_OUT_NAMES: frozenset[str] = frozenset(
@@ -490,16 +507,30 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
                     "%d of those %d sites sit behind a mixer this port has no"
                     " seam for, which reads its projections as bare tensors, so"
                     " no wrapped forward runs them and their delta is missing"
-                    " from a Locate row. See LOCATE_LORA_NOTES.md.",
+                    " from a Locate row. The seam bodies live in layers/.",
                     self.adapter.inert_sites,
                     self.adapter.lora_sites,
                 )
         else:
-            logger.info(
-                "the adapted checkpoint carries no *.lora_a tensors, so no"
-                " adapter sites are built and every step runs the plain"
-                " backbone"
-            )
+            # Two different reasons land here, and the log has to tell them
+            # apart: a fold this process switched off, and a backbone that
+            # never shipped an adapter. The first one's tensors still load and
+            # the audit still excuses them by suffix, which reads as a plain
+            # backbone unless the line says otherwise.
+            if config.adapter_rank:
+                logger.info(
+                    "the checkpoint carries a rank-%d Locate adapter, but"
+                    " DECIDER_ADAPTER_FOLD is off, so no adapter sites are"
+                    " built, the adapter's tensors load and go unread, and"
+                    " every step runs the plain backbone",
+                    config.adapter_rank,
+                )
+            else:
+                logger.info(
+                    "the adapted checkpoint carries no *.lora_a tensors, so no"
+                    " adapter sites are built and every step runs the plain"
+                    " backbone"
+                )
 
     def head(self, x: Tensor) -> Tensor:
         """Returns the readout's scores of ``x``, accumulated in float32.

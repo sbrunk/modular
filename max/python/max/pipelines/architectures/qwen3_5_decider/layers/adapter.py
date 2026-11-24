@@ -72,8 +72,10 @@ and counts every site it wrapped under the mixer family it sits under, so a
 folded build logs ``mlp 96/96 self_attn 32/32 linear_attn 120/120``
 (:meth:`AdapterSites.census`). A family that owns projections and has no live
 site under it is a mixer this port has no body for, and :func:`install` refuses
-that build. ``LOCATE_LORA_NOTES.md`` records what the 32 ``.self_attn.`` sites
-answered with while the count read only the ``.linear_attn.`` subtree.
+that build. The ``self_attn`` case -- four projections read as one
+``stacked_matmul``, which answered 32 sites as bare tensors before
+:func:`~.layers.attention._attention_core_with_deltas` gave each site its own
+destination -- is recorded in that function's docstring.
 """
 
 from __future__ import annotations
@@ -686,9 +688,9 @@ def install(
             f"{detail}. No wrapped forward in that family runs, so the delta"
             " those pairs hold reaches no row, while"
             " ``Module.load_state_dict`` still counts each pair as consumed."
-            f" install built the tree with{sites.census()}; the mixer swap is in"
-            " Qwen3_5DeciderTextModel.__init__ and the bodies are in layers/."
-            " LOCATE_LORA_NOTES.md records the self_attn case."
+            f" install built the tree with{sites.census()}; the mixer swap is"
+            " in Qwen3_5DeciderTextModel.__init__ and the seam bodies live in"
+            " layers/."
         )
     embedding = getattr(text_model, "embed_tokens", None)
     if embedding is None:
