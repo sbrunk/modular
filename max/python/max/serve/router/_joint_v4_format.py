@@ -474,6 +474,17 @@ class JointV4Format:
         """The text renderer, with this tokenizer's special tokens defused."""
         return V4Renderer(self._settings, _special_tokens(tokenizer))
 
+    async def separator_id(self, tokenizer: LabelScoringTokenizer) -> int:
+        """The checkpoint's separator token id, resolved and pinned once.
+
+        The Locate encoder assembles its own rows and needs the separator
+        without the decisions marker; both ids come from the same pinned
+        check, so a row from either encoder cannot carry an id this
+        tokenizer disagrees with.
+        """
+        _, separator = await self._marker_and_separator(tokenizer)
+        return separator
+
     async def encode(
         self,
         tokenizer: LabelScoringTokenizer,

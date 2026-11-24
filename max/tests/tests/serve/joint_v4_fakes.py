@@ -155,14 +155,30 @@ class V4Tokenizer:
             f"<|im_start|>user\n{text}"
         )
 
+    def _ids(self, text: str) -> list[int]:
+        return [
+            self.vocab.get(piece, 1000 + sum(map(ord, piece)))
+            for piece in _PIECE.findall(text)
+        ]
+
     async def encode(
         self, text: str, add_special_tokens: bool = False
     ) -> np.ndarray:
         assert add_special_tokens is False
-        return np.asarray(
-            [
-                self.vocab.get(piece, 1000 + sum(map(ord, piece)))
-                for piece in _PIECE.findall(text)
-            ],
-            dtype=np.int64,
-        )
+        return np.asarray(self._ids(text), dtype=np.int64)
+
+    async def encode_with_offsets(
+        self, text: str, add_special_tokens: bool = False
+    ) -> tuple[list[int], list[tuple[int, int]]]:
+        """The word-level fake's ids and each piece's character span."""
+        assert add_special_tokens is False
+        ids: list[int] = []
+        offsets: list[tuple[int, int]] = []
+        for match in _PIECE.finditer(text):
+            ids.append(
+                self.vocab.get(
+                    match.group(), 1000 + sum(map(ord, match.group()))
+                )
+            )
+            offsets.append((match.start(), match.end()))
+        return ids, offsets
