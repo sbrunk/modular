@@ -143,10 +143,9 @@ On, a row that carries the state once and one question chunk per question
 rewinds the recurrent pool to the end of the state before each chunk and leaves
 the conv window at the end of the state for the whole step, so question two
 reads no part of question one. Off, each layer runs its step's tokens in one
-conv and one recurrence call, the route ``mask_off.log`` and ``sq_cost.log``
-measured. Read from the environment once per process at import, because the
-segment split is part of the compiled graph. ``LAYOUT_DEFAULT_NOTES.md`` records
-why the build starts with it on.
+conv and one recurrence call, which lets one question chunk read the
+state its neighbour wrote. Read from the environment once per process at
+import, because the segment split is part of the compiled graph.
 """
 
 RESTART_BLOCKS = int(os.environ.get("DECIDER_RESTART_BLOCKS", "3"))
@@ -198,8 +197,9 @@ class StateRestart:
     segment labels into these edges: a value computed inside the graph from a
     ``Dim('total_seq_len')`` reduction and handed to ``gated_delta_conv1d_fwd``
     or ``gated_delta_recurrence_fwd`` as ``input_row_offsets`` faults in
-    ``_Model_execute`` (``RESTART_DEBUG_NOTES.md``, reproduced by
-    ``spike/restart_debug/table_probe.py --mode table --named``).
+    ``_Model_execute``; a probe over one layer and one 203-token row shows
+    the reduction faulting there while a graph input of the same numbers
+    runs.
     """
 
     segment_index: Tensor | None = None
@@ -281,8 +281,8 @@ def segment_index_from_edges(
     # One comparison per (token, edge) pair: the count of edges a token has
     # passed is its segment index. The reduction runs along the static edge axis,
     # and its result feeds the mask and the per-segment assembly; the state
-    # kernels get their offsets from the graph input alone, which is where
-    # ``RESTART_DEBUG_NOTES.md`` says they have to come from.
+    # kernels get their offsets from the graph input alone, the one place a
+    # reduction of them is not what they are handed.
     starts = F.reshape(edges, [1, edges.shape[0]])
     passed = F.cast(
         F.greater_equal(F.reshape(token_index, [-1, 1]), starts), DType.int32
@@ -574,14 +574,13 @@ def _bounded_row_id(pool: Tensor, row_id: Tensor) -> Tensor:
     """Returns ``row_id`` held inside the row range of ``pool``.
 
     A state row index is a bare integer and ``state_space_copy_rows`` accepts one
-    past the pool: ``restart_probe`` read back whatever sits after the pool and
-    wrote there without an error, and ``ISOLATED_NOTES.md`` section 2 ruled out
-    row arithmetic for the same reason. Neither the state kernels nor the two
+    past the pool: a probe read back whatever sits after the pool and wrote
+    there without an error, ruling out row arithmetic as the culprit. Neither the state kernels nor the two
     state-row copies check the index, so every one this layer produces comes
     through here.
 
-    The clamp only runs where the pool's own row count is a host integer: the
-    probes in ``spike/restart_debug/`` size their pools that way. A served build
+    The clamp only runs where the pool's own row count is a host integer, as
+    a probe sizes its pools. A served build
     sizes both pools with a symbolic dim, ``Dim('linear_attn_conv_rows')`` and
     ``Dim('linear_attn_recurrent_rows')``, and no bound can be applied to an
     index against a dim, so the id passes through. The first layer to meet that
@@ -623,8 +622,8 @@ def restarted_states(
     order. After segment 0 the recurrent pool is read out with
     ``read_state_rows``; before each later segment that snapshot is written back
     with ``write_state_rows``, so each block starts from the end of the state and
-    reads no earlier block's tokens. One row serves the whole step, which is all
-    the served path reserves per request (``ISOLATED_NOTES.md`` section 1).
+    reads no earlier block's tokens. One row serves the whole step, which is
+    all the served path reserves per request, one prefill per request.
 
     Only segment 0's conv writes its window, and the conv pool gets no snapshot.
     The conv kernel maps every token of the step to a row of
@@ -634,15 +633,16 @@ def restarted_states(
     slot. That store lands before the span's own head token reads the window, so
     the head tokens convolve the previous span's last ``kernel_size - 1`` tokens
     and every later token inherits the wrong state.
-    ``spike/restart_debug/span_probe.py`` reads that at ``2.5397e-02`` against
-    one call over a row with one question, where the split owes no change, and at
-    ``0.000e+00`` once those spans stop writing the window.
+    A probe over one row with one question, where the split owes no change
+    at all, measures the damage of that extra store at ``2.5397e-02`` of
+    probability deviation, and ``0.000e+00`` once only the last span writes.
 
     Segment 0 leaves the window holding the end of the state block and no later
     span moves it, which is the look-back every span needs. The conv row at the
     end of the step therefore holds the state block's window: a step resuming
     this row would read look-back tokens from the wrong place, and the
-    registration gives every row one step (``RESTART_SERVED_NOTES.md``).
+    registration pins ``max_batch_size=1`` with chunked prefill off, so
+    every row gets exactly one step.
 
     Each call walks the whole ragged array and writes only the rows its
     ``input_row_offsets`` span, so the per-segment outputs are gathered back

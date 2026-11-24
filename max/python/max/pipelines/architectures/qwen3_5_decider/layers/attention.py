@@ -47,8 +47,7 @@ Delta applied, and no other:
 
 MAX's body supplies the projection math, RoPE, cache stores and output gate the
 port used to re-declare, and a folded build goes back to the port's body for the
-projections. ``FORK_MODEL_NOTES.md`` records what each costs and which runs reach
-them.
+projections.
 
 One more body, and why: :func:`_attention_core_with_deltas` writes the four
 adapter deltas of a folded build. MAX's core takes ``q_proj``, ``k_proj`` and
@@ -58,8 +57,8 @@ projection has no destination of its own: writing it into the ``q_out`` view
 rewrites the ``key`` and ``value`` rows beside it. The port's body adds each
 delta into a fresh buffer, and the three operands stop sharing one. The four
 sites per block, 32 over the tower, carried no delta before this body. Those 32
-pairs hold 12,582,912 adapter elements, 9.7% of the adapter's 129,859,584, and
-``FOLD_ALIAS_NOTES.md`` measures what their absence cost in row agreement. ``layers/deltanet.py`` added the same deltas to the
+pairs hold 12,582,912 adapter elements, 9.7% of the adapter's 129,859,584.
+``layers/deltanet.py`` added the same deltas to the
 120 linear-attention sites and copies the per-device body the same way.
 
 That reuse has one precondition, and :func:`require_mask_seam` enforces it at
@@ -130,12 +129,11 @@ SEGMENT_MASK_ENABLED = os.environ.get("DECIDER_SEGMENT_MASK", "1").lower() in (
 ``0``, ``off`` or ``false``.
 
 On, the full-attention layers ask for the segment labels of the step and run
-the cache-less kernel. Off, every step answers with ``NULL_MASK`` and the paged
-kernel, the route ``mask_off.log`` and ``SQ_NOTES.md`` record. It is read from
-the environment once per process, at import, because the mask is a property of
-the compiled graph: a step either traces labels into the layers or it does not.
-``MASK_NOTES.md`` records what the masked layout costs and answers, and
-``LAYOUT_DEFAULT_NOTES.md`` records why the build starts with it on.
+the cache-less kernel. Off, every step answers with ``NULL_MASK`` and the
+paged kernel instead, which lets one question chunk read the state its
+neighbour wrote. It is read from the environment once per process, at
+import, because the mask is a property of the compiled graph: a step
+either traces labels into the layers or it does not.
 """
 
 
@@ -174,7 +172,8 @@ key rope in: MAX's cache-less branch ropes K with ``rope_ragged``, whose
 with ``rope_ragged_with_position_ids``, which takes one uint32 per token
 (``max/nn/_graph_ops/__init__.py:4022-4041``, used the same way by
 ``max/pipelines/architectures/flux2_modulev3/layers/attention.py:89-95``).
-``POSITIONS_NOTES.md`` and ``POSITIONS_IN_PORT_NOTES.md`` record what each costs.
+The per-token rope costs a little more and answers a lot better: restart
+rows agree with the reference only once the key ropes per token too.
 """
 
 MARKER_TOKEN_ID = 248062

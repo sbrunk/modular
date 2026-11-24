@@ -293,8 +293,6 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
                 " none of that token, so one label covers the question area and"
                 " the mask cuts nothing. Set DECIDER_STATE_RESTART=1 with"
                 " DECIDER_SEGMENT_MASK=1, or set DECIDER_SEGMENT_MASK=0."
-                " LAYOUT_BOUNDS_NOTES.md records the counted table over a Locate"
-                " row."
             )
         # DECIDER_POSITION_RESTART with DECIDER_SEGMENT_MASK used to raise:
         # MAX's masked branch ropes K with rope_ragged, one start position per
@@ -450,8 +448,8 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
         # one row with the state once, and ``encode_default`` picks between them
         # by question count. The three gates decide whether a shared row
         # answers: with any of them off, a row holding two chunks reads the
-        # other chunk's state and continuous rope numbers, the wrong answer
-        # ``SQ_NOTES.md`` and ``MASK_NOTES.md`` record.
+        # other chunk's state and continuous rope numbers, the wrong answer,
+        # asked and refused at build time.
         off_gates = [
             name
             for name, on in (
@@ -580,9 +578,8 @@ class Qwen3_5DeciderDecoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
         which :class:`~.batch_processor.Qwen3_5DeciderBatchProcessor` fills on the
         host each step. The segment edges have to reach the state kernels'
         ``input_row_offsets`` as a graph input: MAX faults in
-        ``_Model_execute`` over a pair the graph reduces itself
-        (``RESTART_DEBUG_NOTES.md``, and :mod:`.batch_processor` for the
-        reproduction). Off, no positions input is declared, so the graph's
+        ``_Model_execute`` over a pair the graph reduces itself; the
+        reproduction is recorded in :mod:`.batch_processor`. Off, no positions input is declared, so the graph's
         inputs and the batch processor's work stay the recorded ones.
         """
         if not STATE_RESTART_ENABLED:

@@ -28,10 +28,8 @@ Why the edges come from the host: a value built inside the graph from a
 ``gated_delta_recurrence_fwd`` as ``input_row_offsets`` faults at
 ``fork/max/engine/api.py:145`` in ``_Model_execute``, before the graph's first
 kernel launch reports anything.
-``spike/restart_debug/table_probe.py --mode table --named`` reproduces it over
-one layer and one 203-token row in about 15 seconds, and the same probe answers
-when the same two numbers come from a static-shape graph input
-(``RESTART_DEBUG_NOTES.md``). The per-token labels stay in the graph:
+A static-shape graph input answers them where a graph reduction cannot,
+faulting the reduction over one layer and one 203-token row. The per-token labels stay in the graph:
 :func:`~.layers.deltanet.segment_index_from_edges` turns this step's edges into
 them, and :func:`~.layers.attention.marker_segments` is the fallback that counts
 the marker token when the step has no edges. The attention mask and the

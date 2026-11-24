@@ -26,7 +26,7 @@ input its base matmul got, as ``LoRALinear.forward`` arranges
 (``locate.py:83-92``). The fusion is given up for a folded build: two matmuls
 of ``[intermediate, hidden]`` against one of ``[2 * intermediate, hidden]``.
 Only a folded build takes this class, so the decisions path keeps the donor's
-fused body and the probabilities of ``v3_all.log``.
+fused body and the probabilities it has always answered.
 """
 
 from __future__ import annotations
