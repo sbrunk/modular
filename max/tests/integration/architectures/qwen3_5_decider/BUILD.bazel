@@ -42,3 +42,18 @@ modular_py_test(
         requirement("numpy"),
     ],
 )
+
+# The head is 6.6 MB and runs on the CPU device: these cases feed it toy
+# tensors and compare against a numpy transcription of the released head,
+# with no checkpoint and no backbone.
+modular_py_test(
+    name = "test_span_head",
+    srcs = ["test_span_head.py"],
+    deps = [
+        "//max/python/max/driver",
+        "//max/python/max/engine",
+        "//max/python/max/graph",
+        "//max/python/max/pipelines/architectures/qwen3_5_decider",
+        requirement("numpy"),
+    ],
+)
