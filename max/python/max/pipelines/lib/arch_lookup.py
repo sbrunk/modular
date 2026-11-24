@@ -995,6 +995,66 @@ table.
 """
 
 
+@dataclass(frozen=True)
+class _NameAlias:
+    """A declared HF architecture name that means another architecture for
+    checkpoints carrying a marker file.
+
+    A checkpoint saved from a backbone class declares the bare backbone name
+    in ``config.json``, which says nothing about which MAX architecture wants
+    it. An entry claims such a name only for checkpoints the predicate
+    accepts, so a checkpoint without the marker keeps the declared name and
+    the ordinary lookup error. The predicate lives with the architecture it
+    routes to and runs before that architecture's module is imported.
+    """
+
+    declared: str
+    """The name as the checkpoint's ``config.json`` declares it."""
+
+    resolves_to: str
+    """The architecture name to use for an accepted checkpoint."""
+
+    module: str
+    """Absolute module path holding the predicate."""
+
+    symbol: str
+    """The predicate: ``bool(model_path)``, with ``model_path`` the resolved
+    checkpoint directory."""
+
+
+_NAME_ALIASES: tuple[_NameAlias, ...] = (
+    _NameAlias(
+        declared="Qwen3_5Model",
+        resolves_to="Qwen3_5DeciderModel",
+        module="max.pipelines.architectures.qwen3_5_decider.detection",
+        symbol="accepts_decider_checkpoint",
+    ),
+)
+"""Declared HF names that resolve elsewhere for marker-carrying checkpoints.
+
+The one entry routes the pplx decider checkpoint, whose ``config.json``
+declares the bare Qwen3.5 backbone name, to the registered
+``Qwen3_5DeciderModel``. Every other checkpoint declaring that bare name is
+unaffected: the predicate rejects it and the declared name stands."""
+
+
+def resolve_name_alias(architecture_name: str, model_path: str) -> str | None:
+    """Returns the architecture name ``architecture_name`` resolves to for the
+    checkpoint at ``model_path``, or ``None`` to keep the declared name.
+
+    Called by
+    :func:`max.pipelines.lib._model_components.architecture_name_for` when it
+    turns a checkpoint's declared name into the lookup key.
+    """
+    for alias in _NAME_ALIASES:
+        if alias.declared != architecture_name:
+            continue
+        predicate = getattr(importlib.import_module(alias.module), alias.symbol)
+        if predicate(model_path):
+            return alias.resolves_to
+    return None
+
+
 def find_architecture(
     name: str | None,
     prefer_module_v3: bool = False,

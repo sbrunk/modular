@@ -260,8 +260,10 @@ class ModelManifest(dict[str, MAXModelConfig]):
         """Returns the main architecture class name.
 
         For non-diffusion models (those with a ``"main"`` key),
-        delegates to ``MAXModelConfig.architecture_name`` which returns
-        ``architectures[0]`` from the HuggingFace config.
+        delegates to ``MAXModelConfig.architecture_name``, which returns
+        ``architectures[0]`` from the HuggingFace config, and the
+        architecture alias table, which may reroute that name from the
+        checkpoint's own files.
 
         For diffusion pipelines (no ``"main"`` key), returns
         ``metadata["_class_name"]`` (such as ``"FluxPipeline"``).

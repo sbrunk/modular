@@ -60,7 +60,8 @@ def architecture_name_for(
     """Returns the main architecture class name for a models mapping.
 
     Non-diffusion mappings (a ``"main"`` key) read the HuggingFace
-    config's ``architectures[0]``; diffusion mappings read
+    config's ``architectures[0]``, which the architecture alias table may
+    reroute when the checkpoint's files say so; diffusion mappings read
     ``metadata["_class_name"]``.
 
     Raises:
@@ -69,7 +70,18 @@ def architecture_name_for(
     if "main" in models:
         arch_name = models["main"].architecture_name
         if arch_name:
-            return arch_name
+            # A checkpoint saved from a backbone class declares that bare
+            # class name in ``architectures[0]``, and more than one MAX
+            # architecture can be built for it; the alias table consults the
+            # checkpoint's own files before the name is trusted. The import
+            # is function-local: arch_lookup imports pipeline_executor, which
+            # imports this module's own model_manifest.
+            from .arch_lookup import resolve_name_alias
+
+            return (
+                resolve_name_alias(arch_name, models["main"].model_path)
+                or arch_name
+            )
         raise ValueError(
             f"Cannot determine architecture name for main model "
             f"{models['main'].model_path!r}: HuggingFace config has "

@@ -642,7 +642,11 @@ class PipelineArgs(ConfigFileModel):
         """Returns the HuggingFace architecture class name for the main model.
 
         Reads ``architectures[0]`` from the model's HuggingFace config without
-        constructing a full :class:`PipelineConfig`.
+        constructing a full :class:`PipelineConfig`, and applies the
+        architecture alias table, which may reroute that name from the
+        checkpoint's own files: the CLI auto-detects the pipeline task with
+        this name before any pipeline is built, so it must see the same name
+        the manifest will resolve to.
 
         Raises:
             ValueError: If the architecture name cannot be determined.
@@ -655,7 +659,11 @@ class PipelineArgs(ConfigFileModel):
                 f"Cannot determine architecture name for {self.model_path!r}: "
                 "HuggingFace config has no 'architectures' field."
             )
-        return arch
+        # Function-local: arch_lookup imports pipeline_executor, which reaches
+        # this module through the manifest.
+        from .arch_lookup import resolve_name_alias
+
+        return resolve_name_alias(arch, self.model_path) or arch
 
     @classmethod
     def from_flat_kwargs(cls, **kwargs: Any) -> Self:
