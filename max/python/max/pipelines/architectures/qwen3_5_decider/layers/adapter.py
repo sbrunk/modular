@@ -413,9 +413,16 @@ class LocateEmbedding(VocabParallelEmbedding):
             # An unbound gate means the decoder never wired a folded step, so
             # no token selects the marker row: answer the base rows.
             return super().forward(indices)
+        # The marker id sits past the base table: the release's tokenizer
+        # registers its added tokens below it, and the adapter's trained row
+        # is the only embedding that id has. The base gather therefore runs
+        # over ids with the marker swapped for row 0, so no read leaves the
+        # table; ``marker_rows`` then puts the trained vector in its place.
+        hit = F.equal(indices, self.marker_id)
+        safe = F.where(hit, F.zeros_like(indices), indices)
         return marker_rows(
             indices,
-            super().forward(indices),
+            super().forward(safe),
             self.locate,
             self.marker_id,
             gate_value,

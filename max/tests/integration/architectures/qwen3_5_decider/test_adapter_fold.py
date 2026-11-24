@@ -159,6 +159,40 @@ def test_install_refuses_a_rank_it_cannot_scale() -> None:
         install(cast(Any, object()), rank=32, marker_id=MARKER)
 
 
+def test_the_marker_id_never_reaches_the_base_embedding_table() -> None:
+    """``<|locate|>`` is one id past the tokenizer's added tokens.
+
+    The adapter's trained row is the only embedding that id has, so the
+    base gather must run over ids with the marker swapped out: reading row
+    ``vocab_size`` is out of range, and a substitution that runs after the
+    gather arrives too late.
+    """
+    from max.driver import CPU
+    from max.pipelines.architectures.qwen3_5_decider.layers.adapter import (
+        AdapterGate,
+        LocateEmbedding,
+    )
+
+    vocab_size = 8
+    embedding = LocateEmbedding(vocab_size, dim=HIDDEN)
+    placement = embedding.weight.mapping
+    base = np.from_dlpack(embedding.weight.cast(DType.float32).to(CPU()))
+    embedding.locate = Tensor.full(
+        [HIDDEN], 77.0, dtype=embedding.weight.dtype
+    ).to(placement)
+    embedding.marker_id = vocab_size  # one past the table
+    embedding.gate = AdapterGate(
+        value=Tensor.ones([3], dtype=DType.float32).to(placement)
+    )
+    rows = embedding.forward(
+        _t(np.array([3, vocab_size, 2], dtype=np.int32)).to(placement)
+    )
+    got = np.from_dlpack(rows.cast(DType.float32).to(CPU()))
+    np.testing.assert_allclose(got[0], base[3], rtol=0, atol=0)
+    np.testing.assert_allclose(got[1], np.full([HIDDEN], 77.0), rtol=0, atol=0)
+    np.testing.assert_allclose(got[2], base[2], rtol=0, atol=0)
+
+
 def test_detection_reads_rank_and_absence_from_tensor_names() -> None:
     assert _read_adapter(
         _state(**{"layers.0.mlp.up_proj.weight": (16, 8)})
