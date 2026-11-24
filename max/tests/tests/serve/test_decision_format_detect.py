@@ -30,7 +30,7 @@ from max.serve.router._joint_v4_format import (
     JOINT_CONFIG_FILE,
     JointV4Format,
 )
-from test_joint_v4_format import _decision, _joint
+from tests.serve.joint_v4_fakes import _decision, _joint
 
 
 def test_detect_picks_the_format_from_the_checkpoint_files(
