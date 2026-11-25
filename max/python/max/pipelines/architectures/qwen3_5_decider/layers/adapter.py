@@ -530,7 +530,7 @@ def _delta_class(cls: type[Module[Any, Any]]) -> type:
     if subclass is not None:
         return subclass
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self: Any, x: Tensor) -> Tensor:
         """Returns ``base(x) + gate * delta(x)``, the delta in float32."""
         return with_delta(
             cls.forward(self, x), x, pair_of(self), self.gate.value
@@ -617,7 +617,7 @@ def install(
     # set, and the line below re-classes whatever it left. The decider is the one
     # that reads the gates, so it should pick the body and :func:`install` should
     # assert that the tree matches, which is what the census below can then do.
-    for path, module in descendants:
+    for _path, module in descendants:
         if isinstance(module, GatedDeltaNet):
             module.__class__ = LocateGatedDeltaNet
         elif isinstance(module, QuantizedMLP):

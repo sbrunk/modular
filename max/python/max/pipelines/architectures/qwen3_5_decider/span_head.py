@@ -173,10 +173,12 @@ class SpanWeights:
 
     @property
     def width(self) -> int:
+        """Proposal columns of the head, the length of each score row."""
         return int(self.ts_weight.shape[0])
 
     @property
     def scale(self) -> float:
+        """The divisor of the head's score matmuls: the root of its width."""
         return math.sqrt(self.width)
 
     @classmethod
@@ -226,8 +228,10 @@ class SpanWeights:
 
 
 def _constant(value: float, dtype: DType, device: DeviceRef) -> Any:
-    """A rank-0 constant, from the Python-literal path of ``ops.constant``: a
-    0-d numpy array lands as ``[1]``, and ``pad`` demands a ranked scalar fill.
+    """A rank-0 constant, from the Python-literal path of ``ops.constant``.
+
+    A 0-d numpy array lands as ``[1]``, and ``pad`` demands a ranked scalar
+    fill.
     """
     return ops.constant(value, dtype, device)
 

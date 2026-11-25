@@ -404,18 +404,17 @@ def _attention_core_with_deltas(
     donor's calls in the donor's order; the base term stays one matmul, which is
     row-for-row the three base projections.
 
-    Args:
-        adapter: the five slots ``(q_pair, k_pair, v_pair, o_pair, gate)`` of
-            a folded build (:data:`AttentionSites`), each pair the site's
-            ``(lora_a, lora_b)`` and ``gate`` the step's per-token gate, or
-            ``None`` on a build with no adapter bound, which leaves every
-            projection at its base term. A half-bound set is not a thing the
-            fold produces.
-        positions: ``[1, total_seq_len]`` uint32 rope position per token
-            (:func:`restarted_positions`), or ``None`` for MAX's own numbering.
-            The label branch reads it for the key rope; the paged branch already
-            takes per-token positions through ``freq_row_ids``, which the caller
-            fills from the same tensor.
+    ``adapter`` names the five slots ``(q_pair, k_pair, v_pair, o_pair,
+    gate)`` of a folded build (:data:`AttentionSites`), each pair the site's
+    ``(lora_a, lora_b)`` and ``gate`` the step's per-token gate, or ``None``
+    on a build with no adapter bound, which leaves every projection at its
+    base term. A half-bound set is not a thing the fold produces.
+
+    ``positions`` holds the ``[1, total_seq_len]`` uint32 rope position of
+    each token (:func:`restarted_positions`), or ``None`` for MAX's own
+    numbering. The label branch reads it for the key rope; the paged branch
+    already takes per-token positions through ``freq_row_ids``, which the
+    caller fills from the same tensor.
 
     Raises:
         NotImplementedError: When the KV cache is FP8. That branch ropes and
