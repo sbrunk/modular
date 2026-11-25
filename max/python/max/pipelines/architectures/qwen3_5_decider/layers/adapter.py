@@ -16,14 +16,16 @@
 ``locate-span/adapter.safetensors`` holds 497 float32 tensors: ``lora_a``
 ``[rank, in_features]`` and ``lora_b`` ``[out_features, rank]`` for each of the
 248 ``nn.Linear`` modules of ``backbone.language_model``, plus one
-``embed_tokens.locate`` row of ``hidden_size``. The reference applies them in
-``LoRALinear.forward`` (``locate.py:83-92``) and ``MarkerEmbedding.forward``
-(``locate.py:112-117``) only while ``enabled``; a decisions request runs with
+``embed_tokens.locate`` row of ``hidden_size``. The reference applies them only
+while its adapter is ``enabled``: each ``LoRALinear.forward`` adds
+``inputs.float() @ A.T @ B.T * (alpha / rank)`` to its projection's output and
+casts that update back to the output's dtype, and ``MarkerEmbedding.forward``
+answers the marker's id with the trained row. A decisions request runs with
 them off, so its logits are those of the plain backbone.
 
 The delta stays unmerged. ``W + BA`` folded into the bfloat16 base weight rounds
-every delta entry to the bfloat16 grid, and the decisions measurement in README
-resolves option gaps near 1e-3, so the two terms are added at run time:
+every delta entry to the bfloat16 grid, and the decisions task scores option
+pairs whose gaps run near 1e-3, so the two terms are added at run time:
 ``base(x)`` in bfloat16, ``x_f32 @ A.T @ B.T * scale`` in float32, the sum cast
 back once per projection.
 
@@ -71,11 +73,10 @@ a destination of its own. :func:`install` re-classes the mixers that need one,
 and counts every site it wrapped under the mixer family it sits under, so a
 folded build logs ``mlp 96/96 self_attn 32/32 linear_attn 120/120``
 (:meth:`AdapterSites.census`). A family that owns projections and has no live
-site under it is a mixer this port has no body for, and :func:`install` refuses
-that build. The ``self_attn`` case -- four projections read as one
-``stacked_matmul``, which answered 32 sites as bare tensors before
-:func:`~.layers.attention._attention_core_with_deltas` gave each site its own
-destination -- is recorded in that function's docstring.
+site under it is a mixer with no seam body, and :func:`install` refuses
+that build. The ``self_attn`` case is recorded in that function's docstring:
+four projections read as one ``stacked_matmul``, where a delta written into a
+``F.split`` view rewrites the rows beside it.
 """
 
 from __future__ import annotations
@@ -110,13 +111,13 @@ __all__ = [
     "with_delta",
 ]
 
-ADAPTER_DELTA_DTYPE: DType | None = DType.float32
+ADAPTER_DELTA_DTYPE: DType = DType.float32
 """The dtype the delta tensors and their matmuls use.
 
 ``float32`` is what ``locate-span/adapter.safetensors`` stores every ``lora_a``
-and ``lora_b`` as, and what ``LoRALinear.forward`` computes its update in
-(``locate.py:83-92``: ``inputs.float()``, then ``update.to(result.dtype)``).
-Declaring bfloat16 instead makes MAX auto-cast all 496 pair tensors on the way
+and ``lora_b`` as, and what ``LoRALinear.forward`` computes its update in:
+``inputs.float()`` in, ``update.to(result.dtype)`` out. Declaring bfloat16
+instead makes MAX auto-cast all 496 pair tensors on the way
 in, with a ``load_state_dict auto-cast: 496 parameter(s) from DType.float32 to
 DType.bfloat16 (precision loss)`` warning, and rounds every delta entry to the
 base weight's grid.
@@ -131,8 +132,8 @@ ADAPTER_RANK = 64
 
 ``qwen3_5_decider.model_config._read_adapter`` takes the rank a checkpoint
 carries from its ``lora_a`` tensors. :func:`install` checks that rank against
-this constant before sizing a pair, because the scale below is a quotient of two
-constants and a checkpoint of another rank would score every delta at
+this constant before sizing a pair: :data:`ADAPTER_SCALE` divides two
+constants, and a checkpoint of another rank would score every delta at
 ``64 / rank`` of the trained value. The pair shapes, the parameter paths and the
 marker row all validate at any rank, so the check is the only thing that stops
 that build.
@@ -213,10 +214,10 @@ def declare_lora(module: object, *, rank: int) -> None:
         )
     out_features, in_features = (int(dim) for dim in weight.shape)
     # The pair takes the base weight's placement, so the two additions stage on
-    # the device that runs the projection; a single-device build is all this
-    # port serves, and :func:`_check_replicated` refuses anything wider.
+    # the device that runs the projection. The decider serves one device, and
+    # :func:`_check_replicated` refuses anything wider.
     placement = getattr(weight, "mapping", None) or weight.mesh
-    dtype = ADAPTER_DELTA_DTYPE or weight.dtype
+    dtype = ADAPTER_DELTA_DTYPE
     # Fresh attributes on a donor-built instance: setattr names that plainly,
     # and the noqa stops ruff (B010) from rewriting it into attribute access
     # the declared ``object`` type would not accept.
@@ -269,7 +270,10 @@ def delta(inputs: Tensor, pair: tuple[Tensor, Tensor], gate: Tensor) -> Tensor:
 
 
 def with_delta(
-    base: Tensor, inputs: Tensor, pair: tuple[Tensor, Tensor], gate: Tensor
+    base: Tensor,
+    inputs: Tensor,
+    pair: tuple[Tensor, Tensor],
+    gate: Tensor | None,
 ) -> Tensor:
     """Returns one projection's output with the adapter delta added.
 
@@ -299,7 +303,7 @@ def marker_rows(
     embeddings: Tensor,
     locate: Tensor,
     marker_id: int,
-    gate: Tensor,
+    gate: Tensor | None,
 ) -> Tensor:
     """Returns ``embeddings`` with the marker's rows taken from ``locate``.
 
@@ -395,8 +399,8 @@ def token_gate(tokens: Tensor, row_offsets: Tensor, marker_id: int) -> Tensor:
 class LocateEmbedding(VocabParallelEmbedding):
     """The input embedding, with the trained marker row behind the gate."""
 
-    # Bound by install() when the fold is built, before any forward runs; they
-    # are declared here so this body and the audit can name their types.
+    # Bound by install() when the fold is built, before any forward runs; the
+    # declarations let this body and the weight audit name their types.
     locate: Tensor
     r"""The trained marker row, at the readout's ``<\|locate\|>`` id."""
 
@@ -447,7 +451,7 @@ class AdapterSites:
     inert_sites: int = 0
     """Sites whose wrapped ``forward`` no mixer calls.
 
-    A site is inert when the mixer above it runs its projections as bare
+    A site is inert when the mixer owning it runs its projections as bare
     tensors and has no seam body: a site under ``.linear_attn.`` where that
     mixer is a donor ``GatedDeltaNet``, under ``.self_attn.`` where it is a donor
     ``Qwen3_5Attention``, or under ``.mlp.`` where it is a donor
@@ -564,12 +568,14 @@ def install(
     Each :class:`~max.nn.common_layers.quant_linear.QuantizedMLP` is re-classed
     to :class:`~.mlp.LocateMLP`, because the donor's body fuses ``gate_proj``
     and ``up_proj`` into one matmul and calls neither as a module, so their
-    pairs would bind to a projection no op reads. Each
+    pairs would bind to a projection no op reads. Each linear-attention mixer
+    is already a :class:`~.deltanet.LocateGatedDeltaNet`:
+    :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` builds it,
+    and its core takes the five projections as ``ProjectionTensors`` and adds
+    their deltas. A tree that still holds a donor
     :class:`~max.pipelines.architectures.qwen3_5_modulev3.layers.gated_deltanet.GatedDeltaNet`
-    is re-classed to :class:`~.deltanet.LocateGatedDeltaNet` for the same
-    reason: its donor core takes the five projections as ``ProjectionTensors``.
-    The four projections under ``self_attn`` get no re-class here; they are live
-    where ``Qwen3_5DeciderTextModel.__init__`` already built a
+    is refused. The four projections under ``self_attn`` get no re-class;
+    they are live where ``Qwen3_5DeciderTextModel.__init__`` already built a
     :class:`~.layers.attention.DeciderAttention`, whose core adds the deltas
     itself.
 
@@ -586,9 +592,10 @@ def install(
         ValueError: If the text model has no ``embed_tokens`` module, or ``rank``
             is not :data:`ADAPTER_RANK`, whose quotient with
             :data:`ADAPTER_ALPHA` is the scale :func:`delta` applies.
-        RuntimeError: If a mixer family this tree holds has no live site under
-            it, so every delta bound there is read by no op. The message carries
-            :meth:`AdapterSites.census`.
+        RuntimeError: If a mixer of this tree is a donor
+            :class:`GatedDeltaNet`, or if a mixer family this tree holds has no
+            live site under it, so every delta bound there is read by no op.
+            The message carries :meth:`AdapterSites.census`.
     """
     if rank != ADAPTER_RANK:
         raise ValueError(
@@ -602,25 +609,37 @@ def install(
             " locate-span/locate_config.json, or leave the fold off."
         )
     sites = AdapterSites(marker_id=marker_id, rank=rank)
-    # Local imports: layers/attention.py and layers/deltanet.py read the delta
-    # ops out of this module, so neither can sit at module scope.
+    # Local imports: :mod:`.attention` and :mod:`.deltanet` read the delta ops
+    # out of adapter.py, so neither import can sit at module scope.
     from .attention import DeciderAttention
     from .deltanet import LocateGatedDeltaNet
 
     descendants = list(text_model.descendants)
+    # Qwen3_5DeciderTextModel.__init__ owns the linear-attention body: it builds
+    # every linear_attention block as a LocateGatedDeltaNet, whatever
+    # DECIDER_STATE_RESTART says, so install only checks the tree it was handed.
+    # A donor GatedDeltaNet core reads its five projections as bare
+    # ProjectionTensors, which leaves every pair bound under it unread.
+    donor_deltanet = [
+        path
+        for path, module in descendants
+        if isinstance(module, GatedDeltaNet)
+        and not isinstance(module, LocateGatedDeltaNet)
+    ]
+    if donor_deltanet:
+        raise RuntimeError(
+            f"{len(donor_deltanet)} linear_attn mixers are still"
+            f" {GatedDeltaNet.__name__}:"
+            f" {', '.join(sorted(donor_deltanet)[:4])}."
+            " Qwen3_5DeciderTextModel.__init__ builds each linear_attention"
+            " block as a LocateGatedDeltaNet, the body that adds the five"
+            " deltas; a donor core reads its projections as bare"
+            " ProjectionTensors and no wrapped forward runs."
+        )
     # The seam bodies go on before any site is counted, so one pass knows which
     # subtree is live.
-    #
-    # One owner for the DeltaNet body, and today there are two:
-    # ``Qwen3_5DeciderTextModel.__init__`` (``decider.py:296-309``) builds a
-    # :class:`~.deltanet.LocateGatedDeltaNet` when ``DECIDER_STATE_RESTART`` is
-    # set, and the line below re-classes whatever it left. The decider is the one
-    # that reads the gates, so it should pick the body and :func:`install` should
-    # assert that the tree matches, which is what the census below can then do.
     for _path, module in descendants:
-        if isinstance(module, GatedDeltaNet):
-            module.__class__ = LocateGatedDeltaNet
-        elif isinstance(module, QuantizedMLP):
+        if isinstance(module, QuantizedMLP):
             module.__class__ = LocateMLP
     seam_mixers = {
         path
@@ -637,16 +656,14 @@ def install(
     for path, module in descendants:
         if path.rpartition(".")[2] in skip:
             continue
-        # A mixer that runs its projections as bare tensors reads the gate
-        # itself; LocateGatedDeltaNet is the only one that does.
         if isinstance(module, Module) and (
             getattr(module, "q_proj", None)
             or getattr(module, "in_proj_qkv", None)
         ):
             # A mixer that runs its projections as bare tensors reads the gate
-            # itself; LocateGatedDeltaNet is the only one that does. The bind
-            # is dynamic on purpose (a fresh attribute on a donor-built
-            # instance), so it goes through setattr.
+            # itself; LocateGatedDeltaNet and DeciderAttention are the two that
+            # do. The bind is dynamic on purpose (a fresh attribute on a
+            # donor-built instance), so it goes through setattr.
             setattr(module, "gate", sites.gate)  # noqa: B010
         weight = getattr(module, "weight", None)
         if (
@@ -673,10 +690,10 @@ def install(
         "self_attn": DeciderAttention.__name__,
         "linear_attn": LocateGatedDeltaNet.__name__,
     }
-    # A family the tree holds, with sites bound and every one of them inert, is
-    # the 32-of-248 incident: the pairs load, the weight audit counts them
-    # consumed, and no op reads them. Half of a family inert stays a count for
-    # the decider's warning line.
+    # A family the tree holds, with sites bound and every one of them inert,
+    # loads the pairs, counts them consumed in the weight audit, and reads none
+    # of them. Half of a family inert stays a count for the decider's warning
+    # line.
     starved = [
         family
         for family in MIXER_FAMILIES

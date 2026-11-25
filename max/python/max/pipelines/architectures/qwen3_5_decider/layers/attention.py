@@ -13,8 +13,8 @@
 
 """Non-causal full attention for the decider's decision state.
 
-What it installs: the mixer this port puts in the eight ``full_attention``
-blocks of the decider's 32-layer hybrid tower (:class:`DeciderAttention`).
+:class:`DeciderAttention` is the mixer installed in the eight
+``full_attention`` blocks of the decider's 32-layer hybrid tower.
 ``decision_config.json`` declares ``attention_mode: noncausal_full_attention``
 and protocol v4 puts one question per ragged row with the answer marker last,
 so a query must see every key in its own row, in one prefill, once.
@@ -24,13 +24,14 @@ Everything except the mask is MAX's. :class:`DeciderAttention` subclasses
 and answers the two arguments that ``forward`` takes for the mask:
 ``segment_ids``, the label per token, and ``mask_variant``, the mask the chosen
 kernel gets. MAX threads that pair at
-``max/pipelines/architectures/lfm3/layers/attention.py:116-176``, and this port's
-decoder threads it the same way. The projection declarations and their tensor-parallel placement, the per-head ``[Q | gate]``
-layout of ``q_proj``, the Q/K RMSNorms that scale by ``1 + weight``, the
-partial-RoPE lane reorder, the grouped-query layout the ragged kernels read,
-the fused rope that rotates K where the layer just stored it, the sigmoid
-output gate, the ``call_on_mesh`` / ``Partial()`` shape of ``forward``, and the
-per-device body itself all run as MAX wrote them.
+``max/pipelines/architectures/lfm3/layers/attention.py:116-176``, and
+:meth:`qwen3_5_decider.decider.Qwen3_5DeciderDecoder.forward` threads it the
+same way. The projection declarations and their tensor-parallel placement, the
+per-head ``[Q | gate]`` layout of ``q_proj``, the Q/K RMSNorms that scale by
+``1 + weight``, the partial-RoPE lane reorder, the grouped-query layout the
+ragged kernels read, the fused rope that rotates K where the layer just stored
+it, the sigmoid output gate, the ``call_on_mesh`` / ``Partial()`` shape of
+``forward``, and the per-device body itself all run as MAX wrote them.
 
 Delta applied, and no other:
 
@@ -45,28 +46,27 @@ Delta applied, and no other:
   selects ``flash_attention_ragged_gpu``, the only ragged kernel taking labels.
   That kernel reads no cache, so K is roped in registers inside MAX's body.
 
-MAX's body supplies the projection math, RoPE, cache stores and output gate the
-port used to re-declare, and a folded build goes back to the port's body for the
-projections.
+MAX's body supplies the projection math, RoPE, cache stores and output gate. A
+folded build, and a build that ropes the key per token, go to
+:func:`_attention_core_with_deltas` instead.
 
 One more body, and why: :func:`_attention_core_with_deltas` writes the four
 adapter deltas of a folded build. MAX's core takes ``q_proj``, ``k_proj`` and
 ``v_proj`` as one ``stacked_matmul`` over concatenated weights and answers
 ``F.split``, which hands out three views of that one buffer, so a delta for one
 projection has no destination of its own: writing it into the ``q_out`` view
-rewrites the ``key`` and ``value`` rows beside it. The port's body adds each
-delta into a fresh buffer, and the three operands stop sharing one. The four
-sites per block, 32 over the tower, carried no delta before this body. Those 32
-pairs hold 12,582,912 adapter elements, 9.7% of the adapter's 129,859,584.
-``layers/deltanet.py`` added the same deltas to the
-120 linear-attention sites and copies the per-device body the same way.
+rewrites the ``key`` and ``value`` rows beside it. The second body adds each
+delta into a fresh buffer, and the three operands stop sharing one. Each
+``full_attention`` block holds four sites, 32 over the tower.
+``layers/deltanet.py`` adds the same deltas to the 120 linear-attention sites
+and copies the per-device body the same way.
 
 That reuse has one precondition, and :func:`require_mask_seam` enforces it at
 build time: the installed ``Qwen3_5Attention.forward`` has to take the mask
 arguments, and the installed ``Qwen3_5TextModel.forward`` has to take
 ``segment_ids`` and hand them to the layers. A donor that names
-``CAUSAL_MASK`` inline in its attention body takes neither, and there the port's
-arguments are dead code.
+``CAUSAL_MASK`` inline in its attention body takes neither, and there the mask
+arguments of :meth:`DeciderAttention.forward` are dead code.
 """
 
 from __future__ import annotations
@@ -147,9 +147,9 @@ def labels_reach_attention() -> bool:
     runs the state rewind derives labels for its own segment table and hands
     none of them to the eight ``full_attention`` layers, which stay on the paged
     :func:`flash_attention_ragged` the ``attention kernel:`` line names.
-    :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` prints the
-    branch and :meth:`Qwen3_5DeciderDecoder.forward` threads the labels through this
-    test, so the log line and the traced kernel come from one rule.
+    :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` logs the
+    branch and :meth:`Qwen3_5DeciderDecoder.forward` threads the labels through
+    this test, so the log line and the traced kernel come from one rule.
     """
     return SEGMENT_MASK_ENABLED
 
@@ -168,8 +168,8 @@ chunk 2 counts from the end of chunk 1. It needs
 step's segment table.
 
 Under :data:`SEGMENT_MASK_ENABLED` the layer runs :func:`_attention_core_with_deltas`
-even with no adapter bound, because that is the only body this port controls the
-key rope in: MAX's cache-less branch ropes K with ``rope_ragged``, whose
+even with no adapter bound, because that is the only body that ropes the key
+per token: MAX's cache-less branch ropes K with ``rope_ragged``, whose
 ``start_pos`` is one number per ragged row
 (``max/nn/_graph_ops/__init__.py:3844-3866``), and this core ropes the same key
 with ``rope_ragged_with_position_ids``, which takes one uint32 per token
@@ -182,8 +182,8 @@ rows agree with the reference only once the key ropes per token too.
 MARKER_TOKEN_ID = 248062
 """The ``<|fim_suffix|>`` token id, which ends each question chunk.
 
-``tokenizer.json``'s ``added_tokens`` names it, and
-``format/pplx_v13_format.py`` encodes one per chunk, last. Like
+``tokenizer.json``'s ``added_tokens`` names it, and the state-once renderer
+ends each question chunk with it, last. Like
 :data:`.model_config.LOCATE_MARKER_ID` this is a constant: nothing reads
 ``tokenizer.json`` at build, so a checkpoint trained on another marker needs it
 changed by hand.
@@ -216,12 +216,12 @@ def marker_segments(
     """Returns each token's int32 segment id, read off the step's tokens.
 
     The state block and the separator that closes it get -1, which the segment
-    mask makes visible to every token of the row. Chunk ``i`` -- the question
-    text and the marker that ends it -- gets ``i``, so a marker reads its own
-    chunk and the state, and reads no other chunk. The two running counts are
-    global over the ragged batch, so each one is offset by the count its row
-    starts with: labels restart at every row and never go down inside one,
-    which is what the kernel asks for.
+    mask makes visible to every token of the row. Chunk ``i`` gets the label
+    ``i``: the question text and the marker that ends it. A marker therefore
+    reads its own chunk and the state, and reads no other chunk. The two
+    running counts are global over the ragged batch, so each one is offset by
+    the count its row starts with. The kernel asks for labels that restart at
+    every row and never go down inside one.
     """
     row_lengths = F.cast(
         input_row_offsets[1:] - input_row_offsets[:-1], DType.int32
@@ -258,7 +258,7 @@ def restarted_positions(edges: Tensor, segment_index: Tensor) -> Tensor:
 
     ``edges`` is the step's ``[blocks + 2]`` int32 segment table
     (:func:`~.deltanet.restart_edges`) and ``segment_index`` is each token's
-    segment index (:func:`~.deltanet.restart_segment_index`). A token of
+    segment index (:func:`~.deltanet.segment_index_from_edges`). A token of
     segment ``s``
     gets ``token_index - edges[s] + edges[1]``: the count of tokens its own
     chunk ran through, offset by the state's length, so chunk 2 starts where the
@@ -291,7 +291,7 @@ def restarted_positions(edges: Tensor, segment_index: Tensor) -> Tensor:
 
 
 def require_mask_seam() -> None:
-    """Refuses a build on a MAX that cannot take this port's mask arguments.
+    """Refuses a build on a MAX whose donor layers take no mask arguments.
 
     Two donor seams carry the mask. ``Qwen3_5Attention.forward`` answers
     ``mask_variant`` and ``segment_ids``, and ``Qwen3_5TextModel.forward`` takes
@@ -299,8 +299,9 @@ def require_mask_seam() -> None:
     MAX declares neither: its attention body names
     ``MHAMaskVariant.CAUSAL_MASK`` inline, and its text model has no
     ``segment_ids`` parameter. A build there traces a causal row under a
-    protocol-v4 prompt whose marker is last, and the port's ``attention kernel:``
-    line still reports ``NULL_MASK``. An install carrying only the attention half
+    protocol-v4 prompt whose marker is last, and
+    :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` still logs
+    ``NULL_MASK`` for it. An install carrying only the attention half
     fails inside ``Qwen3_5TextModel.forward``, and the ``TypeError`` names
     ``segment_ids``. Both refusals belong before the first layer is built, and
     :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` runs this one
@@ -553,9 +554,10 @@ class DeciderAttention(Qwen3_5Attention):
 
     ``segment_ids`` arrives as an argument of ``forward``, threaded per step by
     :meth:`qwen3_5_decider.decider.Qwen3_5DeciderDecoder.forward` under
-    :data:`SEGMENT_MASK_ENABLED`, and this class answers ``mask_variant`` with
-    ``NULL_MASK``. ``restart`` is that graph's segment table, put on the layer
-    by :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` when
+    :data:`SEGMENT_MASK_ENABLED`, and :meth:`DeciderAttention.forward` answers
+    ``mask_variant`` with ``NULL_MASK``. ``restart`` is that graph's segment
+    table, put on the layer by
+    :meth:`qwen3_5_decider.decider.Qwen3_5DeciderTextModel.__init__` when
     :data:`POSITION_RESTART_ENABLED` is set, and is what :meth:`forward` reads
     for the step's rope positions.
     """
@@ -568,12 +570,13 @@ class DeciderAttention(Qwen3_5Attention):
     only when :data:`POSITION_RESTART_ENABLED` traced them.
     """
 
-    gate: AdapterGate
+    gate: AdapterGate | None = None
     """The step's :class:`~.adapter.AdapterGate`, bound by ``install`` on a
-    folded build and absent on a decisions build. Its presence is what picks
-    the body: MAX's for the plain projections, the port's for the four that
-    carry a delta. :func:`~.adapter._check_replicated` refuses a
-    tensor-parallel build, so the pairs reach one device.
+    folded build and ``None`` on a decisions build. Its presence is what picks
+    the body: ``Qwen3_5Attention.forward`` for the plain projections,
+    :func:`_attention_core_with_deltas` for the four that carry a delta.
+    :func:`~.adapter._check_replicated` refuses a tensor-parallel build, so the
+    pairs reach one device.
     """
 
     def _deltas_core(
@@ -688,20 +691,21 @@ class DeciderAttention(Qwen3_5Attention):
                 "this layer was handed segment labels with"
                 " DECIDER_SEGMENT_MASK switched off, so it would trace"
                 " flash_attention_ragged_gpu with per-token labels while"
-                " Qwen3_5DeciderTextModel.__init__ prints"
+                " Qwen3_5DeciderTextModel.__init__ logs"
                 " 'attention kernel: flash_attention_ragged under NULL_MASK'."
                 " labels_reach_attention() answers for both: thread the labels"
                 " under the mask gate, or call this layer without them."
                 " The step's segment table for DECIDER_STATE_RESTART comes from"
                 " restart_edges(labels, blocks), not from this argument"
             )
-        gate = getattr(self, "gate", None)
+        gate = self.gate
         if gate is None and labels_reach_attention() and positions is not None:
             # MAX's own body would rope Q at the restarted numbers and K at one
             # start position per ragged row, and the two operands would disagree
-            # about where a token sits. The port's body is the one that takes
-            # per-token positions on both operands, so the masked restart runs
-            # there with no adapter gate: the projections keep their base terms.
+            # about where a token sits. _attention_core_with_deltas is the body
+            # that takes per-token positions on both operands, so the masked
+            # restart runs there with no adapter gate: the projections keep
+            # their base terms.
             return self._deltas_core(
                 x,
                 kv_collection,
@@ -717,9 +721,10 @@ class DeciderAttention(Qwen3_5Attention):
             # A folded build put ``(lora_a, lora_b)`` on this layer's four
             # projections, and MAX's body reads those four as bare
             # ``ProjectionTensors``, so no wrapped ``forward`` runs their
-            # deltas. The port's body takes each projection's destination and
-            # writes it. A decisions build binds no gate, and the layer keeps
-            # MAX's body: same graph, same probabilities, one less copy.
+            # deltas. :func:`_attention_core_with_deltas` takes each
+            # projection's destination and writes it. A decisions build binds
+            # no gate, and the layer keeps MAX's body: same graph, same
+            # probabilities, one less copy.
             return self._deltas_core(
                 x,
                 kv_collection,
@@ -740,7 +745,8 @@ class DeciderAttention(Qwen3_5Attention):
             # Keywords from this point down: the donor's own order is
             # ``freq_row_ids, segment_ids, mask_variant``, and a donor that
             # reorders them would hand ``segment_ids`` to ``mask_variant``, and
-            # the layer would trace a mask this port did not ask for.
+            # the layer would trace a mask
+            # :meth:`DeciderAttention.forward` did not ask for.
             freq_row_ids=freq_row_ids,
             segment_ids=segment_ids,
             mask_variant=MHAMaskVariant.NULL_MASK,

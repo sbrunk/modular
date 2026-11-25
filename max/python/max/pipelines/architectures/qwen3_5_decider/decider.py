@@ -13,8 +13,7 @@
 
 """The decider's registered decoder: the Qwen3.5 hybrid tower, readout head.
 
-This is the ModuleV3 port of the graph-API spike in ``qwen3_5_decider/``. One
-protocol-v4 batch goes in (ragged rows, one per question, each ending at the
+One protocol-v4 batch goes in (ragged rows, one per question, each ending at the
 answer marker) and one row of 255 readout scores comes out per row, which is
 what MAX's ``LabelScorer`` gathers the option probabilities from.
 
@@ -22,19 +21,21 @@ Structurally mirrors
 ``max.pipelines.architectures.qwen3_5_modulev3.qwen3_5``: the registered
 ``DECODER`` unflattens the cache tree into the attention pages and the
 gated-DeltaNet state leaves, and the text model is the donor's
-:class:`Qwen3_5TextModel` -- embedding, hybrid layer schedule, final norm,
+:class:`Qwen3_5TextModel`: embedding, hybrid layer schedule, final norm,
 last-token logits. The donor's own helpers do that plumbing
 (:func:`replicate`, :func:`distributed_state`, :data:`ATTN_CACHE_KEY`,
-:data:`STATE_CACHE_KEY`), and the gated-DeltaNet mixer is the donor's
-:class:`GatedDeltaNet` unmodified.
+:data:`STATE_CACHE_KEY`), and each ``linear_attention`` block runs
+:class:`~.layers.deltanet.LocateGatedDeltaNet`, the donor mixer plus the five
+projection deltas and the segment table.
 
 Deltas layered on top of the donor:
 
 - **The head is the 255-row readout, in float32.** ``lm_head`` stays absent, as
   the donor leaves it for a ``tie_word_embeddings`` checkpoint, and the
   tied-embedding matmul it would fall back to is replaced by ``readout``. The
-  matmul runs in float32 on the bfloat16 backbone, which is what the reference
-  does on a float32 run and what the graph-API route measured against.
+  matmul runs in float32 on the bfloat16 backbone. The reference does the
+  same on a float32 run, and the answers here were compared against that
+  reference.
 - **Full attention is non-causal.** Each ``full_attention`` layer's mixer is
   replaced by :class:`~.layers.attention.DeciderAttention`, which answers MAX's
   ``mask_variant`` argument with ``NULL_MASK``. A MAX whose
@@ -48,15 +49,16 @@ Deltas layered on top of the donor:
   step's span edges, which arrive as a host-filled graph input and say where the
   state ends and where each question ends; without that input,
   :func:`~.layers.attention.marker_segments` counts the token that closes
-  each chunk -- ``<|fim_suffix|>`` for a decisions row, ``<|locate|>`` for a
+  each chunk: ``<|fim_suffix|>`` for a decisions row, ``<|locate|>`` for a
   Locate row.
 - **No vision merge, no M-RoPE positions, no speculative path.** The config
   clears the tower and the M-RoPE section, so the rotary table is the static
   one indexed by position within a row, and the graph takes no
   ``token_positions`` input.
 - **The weight-coverage audit runs at build.** Every tensor of the adapted
-  checkpoint that matches no parameter is reported; the ones this milestone
-  leaves out are named, counted, and everything else raises.
+  checkpoint that matches no parameter is reported; the names
+  :func:`_left_out_reason` excuses are named and counted, and every other one
+  raises.
 """
 
 from __future__ import annotations
@@ -123,7 +125,7 @@ __all__ = ["Qwen3_5DeciderDecoder", "Qwen3_5DeciderTextModel"]
 logger = logging.getLogger(__name__)
 
 _LEFT_OUT_PREFIXES: tuple[str, ...] = ("visual.",)
-"""The vision tower: this milestone registers no ``VISION`` module."""
+"""The vision tower: the decider registers no ``VISION`` module."""
 
 _LEFT_OUT_SUFFIXES: tuple[str, ...] = (".lora_a", ".lora_b", ".locate")
 """The unmerged Locate adapter, excused while :data:`ADAPTER_FOLD_ENABLED` is
@@ -147,8 +149,8 @@ the marker row, the delta ops of ``LoRALinear.forward``, and a per-token gate
 ``<|locate|>`` token, so a decisions row carries a gate of exact 0.0 and
 :func:`~.layers.adapter.with_delta` returns its base bit for bit. A folded
 build traces the donor's blocks inline (``use_subgraphs = False``), the route
-a speculative verify takes for the same reason: MAX refuses to move a tensor
-built in the enclosing graph -- the gate is one -- into a layer subgraph.
+a speculative verify takes for the same reason: the gate is built in the
+enclosing graph, and MAX refuses to move it into a layer subgraph.
 Every mixer family the tower uses has a body that reads the gate:
 :class:`~.layers.attention.DeciderAttention`, :class:`~.layers.mlp.LocateMLP`
 and :class:`~.layers.deltanet.LocateGatedDeltaNet`, and
@@ -180,9 +182,9 @@ _LEFT_OUT_NAMES: frozenset[str] = frozenset(
 
 
 def _left_out_reason(name: str) -> str | None:
-    """Returns why a checkpoint tensor is unused here, or ``None`` if not.
+    """Returns why a checkpoint tensor is left out, or ``None`` if not.
 
-    The two groups are the milestone list, not a wildcard: the vision tower
+    The excuses match literal prefixes, suffixes and names: the vision tower
     (no ``VISION`` module is registered) and the Locate span head, which the
     decoder has no consumer for until the span scoring graph exists.
     """
@@ -203,9 +205,8 @@ def audit_weight_coverage(
     ``compile(weights=...)`` checks the state dict from the parameter side
     only: a tensor that no parameter reads is dropped without a warning, so a
     stale rename or a component the module never builds shows up as accuracy
-    drift, not as an error. Only the names this milestone documents as unused
-    are excused, and they are counted in the log so a change in that set is
-    visible.
+    drift, not as an error. Only the names :func:`_left_out_reason` excuses are
+    dropped, and the log counts them so a change in that set is visible.
 
     Args:
         checkpoint_tensor_names: The adapted checkpoint's tensor names, as the
@@ -250,16 +251,19 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
 
     ``Qwen3_5TextModel`` builds the embedding, the 32-block hybrid schedule,
     the final norm and the head, and its ``hidden_states``/``logits``/``forward``
-    do the rest. Two things are re-declared here: the mixer of each
-    full-attention block, and the head.
+    do the rest. This class re-declares three things: the mixer of each
+    full-attention block, the mixer of each linear-attention block, and the
+    head.
     """
 
     def __init__(self, config: Qwen3_5DeciderConfig) -> None:
-        """Builds the donor stack, then swaps in this port's two pieces.
+        """Builds the donor stack, then swaps in the decider's three pieces.
 
         The blocks and the projections the swap does not touch are the donor's
         instances, kept as built. The eight full-attention mixers are rebuilt to
-        answer the mask seam another way; the head is re-declared below.
+        answer the mask seam another way, the 24 linear-attention mixers are
+        rebuilt to read the segment table, and :meth:`head` re-declares the
+        readout.
 
         Raises:
             RuntimeError: When the gate combination cannot serve the layout it
@@ -270,7 +274,7 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
                 :func:`~.layers.attention.require_mask_seam`.
         """
         # Before anything is built: on a donor that does not ask its layer for the
-        # mask arguments, the swap below would trace CAUSAL_MASK and report
+        # mask arguments, a rebuilt mixer would trace CAUSAL_MASK and report
         # NULL_MASK.
         require_mask_seam()
         if POSITION_RESTART_ENABLED and not STATE_RESTART_ENABLED:
@@ -297,12 +301,12 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
                 " DECIDER_STATE_RESTART=1 with DECIDER_SEGMENT_MASK=1, or"
                 " set DECIDER_SEGMENT_MASK=0."
             )
-        # DECIDER_POSITION_RESTART with DECIDER_SEGMENT_MASK used to raise:
-        # MAX's masked branch ropes K with rope_ragged, one start position per
-        # ragged row, so per-token positions could only restart Q.
-        # DeciderAttention.forward answers that pair through the port's own core,
-        # which ropes Q through fused_qk_ragged_rope(position_ids=...) and K
-        # through rope_ragged_with_position_ids, both per token.
+        # POSITION_RESTART needs the key roped per token: MAX's masked branch
+        # ropes K with rope_ragged, one start position per ragged row, so a
+        # position could restart the query only. DeciderAttention.forward
+        # answers that pair through _attention_core_with_deltas, which ropes Q
+        # through fused_qk_ragged_rope(position_ids=...) and K through
+        # rope_ragged_with_position_ids, both per token.
         super().__init__(config)
         # A checkpoint that ships the Locate span head gets the ``label_hidden``
         # channel: the route that answers Locate reads the gathered rows
@@ -316,7 +320,7 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
         # ``qwen3_5.py:143-144``, ``quant_config=attn_quant`` at
         # ``qwen3_5.py:162`` for attention and ``qwen3_5.py:177`` for the
         # DeltaNet. A swap that leaves that argument out declares unquantised
-        # projections over a quantised checkpoint, so both swaps below read this
+        # projections over a quantised checkpoint, so both rebuilds read this
         # scheme.
         scheme = config.quant_scheme
         for index, kind in enumerate(self.layer_types):
@@ -345,50 +349,53 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
         # reads the same labels, so a build that only rewinds the state still
         # derives them.
         # One segment table per compiled graph for the 24 linear-attention
-        # mixers, bound once per step below: the end of the state, then one edge
-        # per question block. Off, every layer runs its step in one call.
+        # mixers, bound once per step: the end of the state, then one edge
+        # per question block. Off, no table exists and each mixer runs its
+        # step's tokens in one conv and one recurrence call.
         self.restart: StateRestart | None = None
         if STATE_RESTART_ENABLED:
             self.restart = StateRestart(blocks=RESTART_BLOCKS)
+        # LocateGatedDeltaNet owns the linear-attention body: it adds the five
+        # projection deltas of a folded build and rewinds between the spans of a
+        # restarted one, and it runs the donor's body for a ``None`` gate and a
+        # ``None`` table. It goes in whether or not this graph has a table.
+        for index, kind in enumerate(self.layer_types):
+            if kind == FULL_ATTENTION:
+                continue
+            block = self.layers[index]
+            donor = block.linear_attn
+            assert donor is not None, "a linear block has a DeltaNet mixer"
+            # Same constructor arguments as the donor block built
+            # (``qwen3_5.py:167-178``), so every checkpoint tensor still lands
+            # on the same parameter path.
+            block.linear_attn = LocateGatedDeltaNet(
+                hidden_size=config.hidden_size,
+                num_key_heads=config.linear_num_key_heads,
+                num_value_heads=config.linear_num_value_heads,
+                key_head_dim=config.linear_key_head_dim,
+                value_head_dim=config.linear_value_head_dim,
+                conv_kernel_size=config.linear_conv_kernel_dim,
+                dtype=config.compute_dtype,
+                rms_norm_eps=config.rms_norm_eps or 1e-6,
+                ssm_dtype=config.mamba_ssm_dtype,
+                quant_config=scheme.attn_config(index) if scheme else None,
+                scalar_dtypes=config.linear_attn_scalar_dtypes,
+            )
+            block.linear_attn.restart = self.restart
+        # ``__init__`` refuses POSITION_RESTART without STATE_RESTART, so a
+        # table exists whenever this runs. The full-attention mixers read the
+        # same table: their ``forward`` answers MAX's ``freq_row_ids`` argument
+        # with the positions this graph binds per step.
+        if POSITION_RESTART_ENABLED:
             for index, kind in enumerate(self.layer_types):
-                if kind == FULL_ATTENTION:
+                if kind != FULL_ATTENTION:
                     continue
-                block = self.layers[index]
-                donor = block.linear_attn
-                assert donor is not None, "a linear block has a DeltaNet mixer"
-                # Same class, same ``__init__``, same constructor arguments as
-                # the donor block built (``qwen3_5.py:167-178``), so every
-                # checkpoint tensor still lands on the same parameter path. The
-                # port's subclass is what has a segment table to read.
-                block.linear_attn = LocateGatedDeltaNet(
-                    hidden_size=config.hidden_size,
-                    num_key_heads=config.linear_num_key_heads,
-                    num_value_heads=config.linear_num_value_heads,
-                    key_head_dim=config.linear_key_head_dim,
-                    value_head_dim=config.linear_value_head_dim,
-                    conv_kernel_size=config.linear_conv_kernel_dim,
-                    dtype=config.compute_dtype,
-                    rms_norm_eps=config.rms_norm_eps or 1e-6,
-                    ssm_dtype=config.mamba_ssm_dtype,
-                    quant_config=(
-                        scheme.attn_config(index) if scheme else None
-                    ),
-                    scalar_dtypes=config.linear_attn_scalar_dtypes,
-                )
-                block.linear_attn.restart = self.restart
-            if POSITION_RESTART_ENABLED:
-                # The same table, read by the full-attention mixers: their
-                # ``forward`` answers MAX's ``freq_row_ids`` argument with the
-                # positions this graph binds per step.
-                for index, kind in enumerate(self.layer_types):
-                    if kind != FULL_ATTENTION:
-                        continue
-                    attention = self.layers[index].self_attn
-                    # ``__init__`` replaced every full-attention mixer with a
-                    # DeciderAttention above; MAX's block types the attribute
-                    # as its own class.
-                    assert isinstance(attention, DeciderAttention)
-                    attention.restart = self.restart
+                attention = self.layers[index].self_attn
+                # ``__init__`` replaced every full-attention mixer with a
+                # DeciderAttention; MAX's block types the attribute
+                # as its own class.
+                assert isinstance(attention, DeciderAttention)
+                attention.restart = self.restart
         if SEGMENT_MASK_ENABLED or STATE_RESTART_ENABLED:
             # The labels and the segment table are built in this graph and read
             # inside a layer, and MAX refuses to move an enclosing-graph tensor
@@ -402,10 +409,11 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             else "flash_attention_ragged under NULL_MASK"
         )
         full_layers = sum(kind == FULL_ATTENTION for kind in self.layer_types)
-        print(
-            f"attention kernel: {kernel} over {full_layers} of"
-            f" {len(self.layer_types)} layers",
-            flush=True,
+        logger.info(
+            "attention kernel: %s over %d of %d layers",
+            kernel,
+            full_layers,
+            len(self.layer_types),
         )
         linear_layers = len(self.layer_types) - full_layers
         position_mode = (
@@ -414,10 +422,10 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             if POSITION_RESTART_ENABLED
             else "continuous across a row, from the row boundaries"
         )
-        print(
-            f"rope positions: {position_mode} over {full_layers}"
-            " full-attention layers",
-            flush=True,
+        logger.info(
+            "rope positions: %s over %d full-attention layers",
+            position_mode,
+            full_layers,
         )
         state_mode = (
             f"snapshot and rewind before each of {RESTART_BLOCKS}"
@@ -431,10 +439,11 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             if STATE_RESTART_ENABLED
             else ""
         )
-        print(
-            f"delta state layout: {state_mode} over {linear_layers}"
-            f" linear-attention layers{span_rule}",
-            flush=True,
+        logger.info(
+            "delta state layout: %s over %d linear-attention layers%s",
+            state_mode,
+            linear_layers,
+            span_rule,
         )
         boundary_rule = (
             "the step's [blocks + 2] span edges, filled on the host by"
@@ -442,15 +451,11 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             if STATE_RESTART_ENABLED
             else f"tokens {CHUNK_MARKER_IDS} counted inside the graph"
         )
-        print(
-            f"segment boundaries from: {boundary_rule}",
-            flush=True,
-        )
+        logger.info("segment boundaries from: %s", boundary_rule)
         # Which row layout a caller should render, and the gates that decide it.
-        # The choice belongs to the caller: ``format/pplx_v13_format.py``
-        # ``encode`` writes one row per question, ``encode_state_once`` writes
-        # one row with the state once, and ``encode_default`` picks between them
-        # by question count. The three gates decide whether a shared row
+        # The caller picks between one row per question and one row holding the
+        # state once followed by one chunk per question, and the pick is by
+        # question count. The three gates decide whether a shared row
         # answers: with any of them off, a row holding two chunks reads the
         # other chunk's state and continuous rope numbers, the wrong answer,
         # asked and refused at build time.
@@ -474,10 +479,11 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             + " is off, so a row holding two chunks would answer against the"
             " other chunk's state"
         )
-        print(f"request layout: {layout_rule}", flush=True)
+        logger.info("request layout: %s", layout_rule)
         # The decision head: ``readout.safetensors``' one BF16 tensor, shaped
         # [codes, hidden] the way a projection is stored. Not tensor-parallel:
-        # this port serves one device, and the readout's 255 rows are not split.
+        # the decider serves one device, and the readout's 255 rows are not
+        # split.
         with default_dtype(config.compute_dtype):
             self.readout = Linear(
                 config.hidden_size, config.readout_rows, bias=False
@@ -513,19 +519,18 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             )
             if self.adapter.inert_sites:
                 logger.warning(
-                    "%d of those %d sites sit behind a mixer this port has no"
-                    " seam for, which reads its projections as bare tensors, so"
+                    "%d of those %d sites sit behind a mixer with no seam"
+                    " body, which reads its projections as bare tensors, so"
                     " no wrapped forward runs them and their delta is missing"
                     " from a Locate row. The seam bodies live in layers/.",
                     self.adapter.inert_sites,
                     self.adapter.lora_sites,
                 )
         else:
-            # Two different reasons land here, and the log has to tell them
-            # apart: a fold this process switched off, and a backbone that
-            # never shipped an adapter. The first one's tensors still load and
-            # the audit still excuses them by suffix, which reads as a plain
-            # backbone unless the line says otherwise.
+            # Two different reasons reach this log line, and it has to tell
+            # them apart: a fold this process switched off, and a backbone that
+            # never shipped an adapter. The first one's tensors still load, and
+            # the audit excuses them by suffix alone.
             if config.adapter_rank:
                 logger.info(
                     "the checkpoint carries a rank-%d Locate adapter, but"
@@ -547,8 +552,8 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
         Replaces both donor branches: the ``lm_head`` projection (absent, tied
         away) and the ``x @ embed_tokens.weight.T`` fallback, which would score
         the 248320-token vocabulary rather than the 255 answer codes. The cast
-        is deliberate -- the reference runs the whole classifier in float32,
-        and a bfloat16 matmul here quantizes logits whose top-two gaps the
+        is the reference's: that code runs the whole classifier in float32,
+        and a bfloat16 matmul quantizes logits whose top-two gaps the
         measurement is about.
         """
         logits = (
@@ -604,8 +609,8 @@ class Qwen3_5DeciderDecoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
         """Builds the model from the finalized config and audits the weights.
 
         Args:
-            config: The port's config, which recorded the adapted checkpoint's
-                tensor names when it finalized.
+            config: The decider's config, which recorded the adapted
+                checkpoint's tensor names when it finalized.
         """
         super().__init__()
         self.config = config
@@ -623,7 +628,7 @@ class Qwen3_5DeciderDecoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
     def forward(self, inputs: DecoderInputs[Tensor]) -> DecoderOutputs:
         """Runs one prefill over the batch and returns the readout rows.
 
-        The cache tree is the port's ``MultiKVCacheParams``: attention pages
+        The cache tree is the decider's ``MultiKVCacheParams``: attention pages
         beside the gated-DeltaNet state. The pages are written and read inside
         this one call; the registration turns prefix caching and chunked
         prefill off, so a row is never split across steps and no step ever
@@ -657,10 +662,10 @@ class Qwen3_5DeciderDecoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
             # full-attention layers, and the restarted DeltaNet reads the same
             # labels for its segment table.
             if self.model.restart is None:
-                # No segment table to read, so the labels come off the tokens:
-                # the state-once renderer ends every chunk with its dialect's
-                # marker -- ``<|fim_suffix|>`` for decisions, ``<|locate|>``
-                # for a Locate row -- and counting either finds the chunk ends.
+                # No segment table to read, so the labels come off the tokens.
+                # The state-once renderer ends every chunk with its dialect's
+                # marker: ``<|fim_suffix|>`` for decisions, ``<|locate|>`` for
+                # a Locate row. Counting either finds the chunk ends.
                 segment_labels = marker_segments(
                     tokens, input_row_offsets, marker_id=CHUNK_MARKER_IDS
                 )
@@ -670,10 +675,10 @@ class Qwen3_5DeciderDecoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
                 # the rope, so a step cannot put a chunk in one span and rewind
                 # it in another. The offsets operand of the two state kernels is
                 # the one value that cannot be a reduction over
-                # ``Dim('total_seq_len')``. The table describes one row per step,
-                # which is what the decisions route scores, and
-                # ``Qwen3_5DeciderBatchProcessor.token_positions`` refuses a step that
-                # batches more.
+                # ``Dim('total_seq_len')``. The table describes one row per
+                # step: the decisions route scores one row per step, and
+                # ``Qwen3_5DeciderBatchProcessor.token_positions`` refuses a
+                # step that batches more.
                 if isinstance(input_row_offsets.shape[0], int):
                     if input_row_offsets.shape[0] != 2:
                         raise RuntimeError(
