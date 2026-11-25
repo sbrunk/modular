@@ -47,6 +47,8 @@ from max.serve.media import GeneratedMediaStore
 from max.serve.pipelines.general_handler import GeneralPipelineHandler
 from max.serve.request import register_request
 from max.serve.router import openresponses_routes
+from max.serve.router._joint_v4_format import JointV4Format
+from tests.serve.joint_v4_fakes import _settings
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +267,18 @@ def test_openresponses_rejects_unknown_model(app: FastAPI) -> None:
 
         assert response.status_code == 404
         assert "currently serving" in response.json()["detail"]
+
+
+def test_openresponses_refuses_a_readout_checkpoint(app: FastAPI) -> None:
+    """This route generates, so a checkpoint whose head scores answer rows is
+    refused before its handler runs."""
+    app.state.decision_format = JointV4Format(_settings())
+    with TestClient(app) as client:
+        request_data = {"model": "test-model", "input": "why 401?"}
+        response = client.post("/v1/responses", json=request_data)
+
+        assert response.status_code == 400
+        assert "/v1/decisions" in response.json()["detail"]
 
 
 def test_openresponses_video_request_returns_download_url(

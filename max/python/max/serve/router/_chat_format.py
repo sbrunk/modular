@@ -116,6 +116,14 @@ class ChatFormat:
             questions=MAX_QUESTIONS,
         )
 
+    def refuses_generation(self) -> None:
+        """No reason to refuse: this checkpoint is an ordinary chat model.
+
+        The chat format means the checkpoint ships no decision protocol, so
+        its head is the vocabulary the chat routes sample from.
+        """
+        return
+
     async def encode(
         self,
         tokenizer: LabelScoringTokenizer,

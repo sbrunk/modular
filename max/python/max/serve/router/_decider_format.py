@@ -121,6 +121,17 @@ class DeciderFormat:
             questions=MAX_QUESTIONS,
         )
 
+    def refuses_generation(self) -> None:
+        """No reason to refuse: a decider checkpoint still has a vocabulary.
+
+        The decider format puts its option labels (``A`` to ``J``) in the
+        prompt and reads their logits out of the model's own vocabulary, so
+        the head the chat routes sample is the one the checkpoint was
+        trained with. Only a readout head, where the answer rows *are* the
+        logits, makes sampling meaningless.
+        """
+        return
+
     def __init__(self, settings: DeciderSettings) -> None:
         self._settings = settings
 

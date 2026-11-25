@@ -61,6 +61,24 @@ class DecisionFormat(Protocol):
         """Version of the prompt wording, reported to callers."""
         ...
 
+    def refuses_generation(self) -> str | None:
+        """Why this server should refuse to generate text, or ``None``.
+
+        A generative route samples ``next_token_logits`` as a vocabulary.
+        A checkpoint whose protocol answers from a readout of option rows
+        has no such vocabulary: sampling it returns row indices dressed up
+        as tokens, which is a confident wrong answer rather than an error.
+        The format is what knows this, because the format is chosen from
+        the checkpoint's own protocol files, so the generative routes ask
+        it here and turn the reason into HTTP 400.
+
+        Returns:
+            The refusal message to show the caller, naming what this server
+            does answer, or ``None`` when generating is what the served
+            checkpoint is for.
+        """
+        ...
+
     @property
     def limits(self) -> OptionLimits:
         """How wide a question this format can render an answer for.

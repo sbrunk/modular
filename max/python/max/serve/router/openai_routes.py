@@ -112,6 +112,7 @@ from max.serve.pipelines.preprocess_cache_stats import (
     preprocessed_image_probe,
 )
 from max.serve.router._disconnect import raise_on_disconnect
+from max.serve.router._generation_guard import require_generation
 from max.serve.router._image_resolution import (
     MediaRef,
     _ImageFact,
@@ -2347,6 +2348,9 @@ async def openai_create_chat_completion(
             request, request_id, CreateChatCompletionRequest
         )
         pipeline = get_pipeline(request, completion_request.model)
+        # A checkpoint whose head scores answer rows has no vocabulary to
+        # sample, and row indices would come back as tokens.
+        require_generation(request, "/v1/chat/completions")
 
         logger.debug(
             "Processing path, %s, req-id,%s%s, for model, %s.",
@@ -3727,6 +3731,7 @@ async def openai_create_completion(
         )
 
         pipeline = get_pipeline(request, completion_request.model)
+        require_generation(request, "/v1/completions")
 
         logger.debug(
             "Path: %s, Request: %s%s, Model: %s",

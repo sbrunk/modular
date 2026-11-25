@@ -97,6 +97,7 @@ from max.serve.router._image_resolution import (
     decode_and_validate_images,
     resolve_image_from_url,
 )
+from max.serve.router._joint_v4_format import JointV4Format
 from max.serve.router.openai_routes import (
     CompletionStreamResponse,
     OpenAIChatResponseGenerator,
@@ -138,6 +139,7 @@ from PIL import Image
 from pydantic import AnyUrl, ValidationError
 from sse_starlette.sse import AppStatus
 from starlette.types import Message, Scope
+from tests.serve.joint_v4_fakes import _settings
 from transformers import PretrainedConfig
 
 if sys.version_info >= (3, 11):
@@ -209,6 +211,36 @@ async def test_openai_chat_completion_single(app) -> None:  # noqa: ANN001
         choice = response.choices[0]
         assert choice.message.content == request_content
         assert choice.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_refuses_a_readout_checkpoint(app) -> None:  # noqa: ANN001
+    """A protocol v4 checkpoint answers from readout rows, so the chat route
+    refuses instead of sampling row indices as token ids."""
+    async with AsyncTestClient(app) as client:
+        # Startup chose the format for the echo checkpoint (the chat one);
+        # say it detected a joint v4 readout instead.
+        app.state.decision_format = JointV4Format(_settings())
+        response = await client.post(
+            "/v1/chat/completions",
+            json=simple_openai_request(model_name="echo", content="why 401?"),
+        )
+    assert response.status_code == 400
+    assert "/v1/decisions" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_completion_refuses_a_readout_checkpoint(app) -> None:  # noqa: ANN001
+    """The legacy completions route samples the same logits, so it refuses
+    the same way."""
+    async with AsyncTestClient(app) as client:
+        app.state.decision_format = JointV4Format(_settings())
+        response = await client.post(
+            "/v1/completions",
+            json={"model": "echo", "prompt": "why 401?"},
+        )
+    assert response.status_code == 400
+    assert "/v1/decisions" in response.json()["error"]["message"]
 
 
 def _force_request_queue_full(app: FastAPI) -> None:

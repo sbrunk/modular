@@ -46,6 +46,7 @@ from max.serve.media import (
     StoredMediaAsset,
     encode_video_bytes_b64,
 )
+from max.serve.router._generation_guard import require_generation
 from starlette.datastructures import State
 
 router = APIRouter(prefix="/v1")
@@ -76,7 +77,9 @@ async def create_response(
 
     Raises:
         HTTPException: If request parsing or validation fails, including
-            if streaming is requested (not currently supported).
+            if streaming is requested (not currently supported) or the
+            served checkpoint answers from a readout of option rows and so
+            has no vocabulary to generate from.
     """
     # Request is already parsed and validated via dependency injection
     # (including validation that streaming is not requested)
@@ -91,6 +94,9 @@ async def create_response(
         request=request,
         requested_model=open_responses_request.body.model,
     )
+    # The responses route generates, so it needs a vocabulary to sample: a
+    # checkpoint answering from a readout of option rows refuses here.
+    require_generation(request, "/v1/responses")
 
     # Generate response using the GeneralPipelineHandler from app state
     logger.debug("Starting response generation")

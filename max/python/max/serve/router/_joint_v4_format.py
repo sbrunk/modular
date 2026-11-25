@@ -470,6 +470,25 @@ class JointV4Format:
             questions=self._settings.max_questions,
         )
 
+    def refuses_generation(self) -> str:
+        """Why this server cannot generate: its head is the readout.
+
+        Protocol v4 scores an answer by reading ``readout.safetensors``,
+        whose rows are options, and the architecture it comes with replaces
+        the vocabulary projection with that readout. A generative route
+        would sample readout row indices as token ids, which returns
+        punctuation rather than an error, so this names the routes that do
+        answer instead.
+        """
+        rows = len(self._settings.codes)
+        return (
+            f"this checkpoint declares joint protocol v4: its head scores "
+            f"{rows} answer rows from readout.safetensors, not a vocabulary, "
+            "so a generated token would be a row index read as an id. Ask "
+            "this model through /v1/decisions, or /v1/locate if it also "
+            "ships a locate-span head."
+        )
+
     def renderer(self, tokenizer: Any) -> V4Renderer:
         """The text renderer, with this tokenizer's special tokens defused."""
         return V4Renderer(self._settings, _special_tokens(tokenizer))
