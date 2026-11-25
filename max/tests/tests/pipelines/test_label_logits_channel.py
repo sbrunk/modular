@@ -103,21 +103,30 @@ def test_leaf_order_and_role_read_back() -> None:
             for name in ("next_token_logits", "label_logits", "hidden_states")
             if getattr(back, name) is not None
         }
-        print(
-            f"channel={with_channel} hidden={with_hidden}: leaves {leaves}; "
-            f"role fields {landed}"
+        hidden_keys = (
+            list(grouped["hidden_states"]) if with_hidden else []
         )
+        assert leaves == [
+            "next_token_logits",
+            *(["label_logits"] if with_channel else []),
+            *[f"hidden_states/{key}" for key in hidden_keys],
+        ]
+        expected_landed: dict[str, Any] = {
+            "next_token_logits": "next_token_logits"
+        }
+        if with_channel:
+            expected_landed["label_logits"] = "label_logits"
+        if with_hidden:
+            expected_landed["hidden_states"] = "hidden_states"
+        assert landed == expected_landed
         assert (back.label_logits is not None) is with_channel
         assert (back.hidden_states is not None) is with_hidden
-        group = list(grouped["logits"])
-        assert (group[-1] == "label_logits") is with_channel
 
 
 def test_a_capture_without_the_channel_binds_the_next_token_rows() -> None:
     """One leaf, and the field it has always landed in stays the same."""
     outputs = bind_captured_outputs([_named("next_token_logits")])
     landed = _fields(outputs)
-    print(f"capture without the channel: {landed}")
     assert landed == {"logits": "next_token_logits"}
     assert isinstance(outputs, ModelOutputs)
 
@@ -152,10 +161,15 @@ def test_the_legacy_ragged_mapper_keeps_the_shapes_it_names() -> None:
         return_logits=ReturnLogits.VARIABLE,
         return_hidden_states=ReturnHiddenStates.LAST,
     )
-    print(
-        "legacy ragged mapper: "
-        f"{[name for name in FIELDS if getattr(outputs, name) is not None]}"
-    )
+    landed = [
+        name for name in FIELDS if getattr(outputs, name) is not None
+    ]
+    assert landed == [
+        "logits",
+        "next_token_logits",
+        "logit_offsets",
+        "hidden_states",
+    ]
     assert outputs.logit_offsets is not None
     assert outputs.hidden_states is not None
     assert outputs.label_logits is None
@@ -164,7 +178,15 @@ def test_the_legacy_ragged_mapper_keeps_the_shapes_it_names() -> None:
 def test_model_outputs_declares_the_channel_after_the_hidden_states() -> None:
     """The dataclass order matches the leaf order a graph returns."""
     names = [field.name for field in fields(ModelOutputs)]
-    print(f"ModelOutputs fields: {names}")
+    assert names == [
+        "logits",
+        "next_token_logits",
+        "next_tokens",
+        "logit_offsets",
+        "hidden_states",
+        "label_logits",
+        "label_hidden",
+    ]
     assert names.index("label_logits") > names.index("hidden_states")
 
 
@@ -188,7 +210,6 @@ def test_logits_outputs_names_the_channel_last_in_the_group() -> None:
             _role(with_channel).label_logits,
         )
         leaves = list(grouped["logits"])
-        print(f"logits_outputs channel={with_channel}: leaves {leaves}")
         assert (
             leaves == ["next_token_logits", "label_logits"]
             if with_channel
@@ -213,7 +234,10 @@ def test_decoder_outputs_reads_the_channel_back() -> None:
             for name in ("next_token_logits", "label_logits")
             if getattr(back, name) is not None
         }
-        print(f"decoder_outputs channel={with_channel}: fields {landed}")
+        assert landed == {
+            "next_token_logits": "next_token_logits",
+            **({"label_logits": "label_logits"} if with_channel else {}),
+        }
         assert (back.label_logits == "label_logits") is with_channel
 
 
@@ -224,7 +248,6 @@ def test_graph_outputs_export_the_channel() -> None:
             _role(with_channel), ReturnHiddenStates.NONE
         )
         leaves = list(grouped["logits"])
-        print(f"_graph_outputs channel={with_channel}: leaves {leaves}")
         assert leaves == (
             ["next_token_logits", "label_logits"]
             if with_channel
