@@ -419,20 +419,21 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             " full-attention layers",
             flush=True,
         )
+        state_mode = (
+            f"snapshot and rewind before each of {RESTART_BLOCKS}"
+            " question blocks"
+            if STATE_RESTART_ENABLED
+            else "one segment per row, no rewind"
+        )
+        span_rule = (
+            f"; a step stating more than {RESTART_BLOCKS + 1} spans is"
+            " refused at the batch processor"
+            if STATE_RESTART_ENABLED
+            else ""
+        )
         print(
-            f"delta state layout: {
-                'snapshot and rewind before each of'
-                f' {RESTART_BLOCKS} question blocks'
-                if STATE_RESTART_ENABLED
-                else 'one segment per row, no rewind'
-            } over {linear_layers}"
-            f" linear-attention layers"
-            + (
-                f"; a step stating more than {RESTART_BLOCKS + 1} spans is"
-                " refused at the batch processor"
-                if STATE_RESTART_ENABLED
-                else ""
-            ),
+            f"delta state layout: {state_mode} over {linear_layers}"
+            f" linear-attention layers{span_rule}",
             flush=True,
         )
         boundary_rule = (
