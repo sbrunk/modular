@@ -11,7 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""The port's layers: the donor mixers it replaces, and why."""
+"""The decider's mixers, each a replacement for one donor layer."""
 
 from .attention import DeciderAttention
 

@@ -13,10 +13,10 @@
 
 """The gated DeltaNet with its five projection deltas applied.
 
-What this file is: the mixer the Locate fold installs in the 24
-``linear_attention`` blocks of the decider's 32-layer hybrid tower
-(:class:`LocateGatedDeltaNet`). Its 120 ``(lora_a, lora_b)`` pairs are 44,924,928
-of the adapter's 129,859,584 float32 elements, and the wrapped-projection seam of
+:class:`LocateGatedDeltaNet` is the mixer the Locate fold installs in the 24
+``linear_attention`` blocks of the decider's 32-layer hybrid tower. Its 120
+``(lora_a, lora_b)`` pairs sit under ``linear_attn``, where the
+core reads its projections as bare tensors and the wrapped-projection seam of
 :mod:`.adapter` reaches none of them.
 
 Derived from
@@ -35,14 +35,13 @@ Deltas applied, and nothing else:
   core splits or ends its matmul: ``in_proj_qkv``, ``in_proj_z``, ``in_proj_b``
   and ``in_proj_a`` after ``stacked_matmul`` and ``F.split`` (donor ``:213-224``),
   ``out_proj`` after the gated matmul (donor ``:451``). Each delta is
-  ``x_f32 @ A.T @ B.T`` in float32, added once and cast back, as
-  ``LoRALinear.forward`` arranges it (``locate.py:83-92``).
+  ``x_f32 @ A.T @ B.T`` in float32, added once and cast back.
 - **The speculative verify path is dropped.** A verify passes ``verify_width`` and
   a ``ReplaySink``, runs the ring recurrence and the ``chunk_long_rows`` map, and
   records replay inputs for the rollback (donor ``:245-264``, ``:266-276``,
-  ``:322-373``, ``:398-436``). This port registers no speculative target, so
-  :meth:`LocateGatedDeltaNet.forward` raises when ``self.verify`` is set instead
-  of carrying that half of the body.
+  ``:322-373``, ``:398-436``). ``qwen3_5_decider`` registers no speculative
+  target, so :meth:`LocateGatedDeltaNet.forward` raises when ``self.verify``
+  is set.
 
 Why the per-device body is re-declared and not subclassed around: the donor's body
 is the module-level function ``_gated_delta_core`` (donor ``:182-451``), which its
@@ -54,16 +53,13 @@ themselves are modules (donor ``:519-538``, ``:555-561``) but ``forward`` reads
 only their ``.tensors`` at ``:574-582``, and ``stacked_matmul`` concatenates the
 four input-side weights and splits the one matmul inside the body, so a subclass
 of ``Projection`` overriding ``forward`` changes nothing. The only seam at that
-boundary is the tensors themselves: handing the core a ``ProjectionTensors`` whose
-weight is ``base + B @ A`` in float32 costs one dense float32 ``[out, in]`` per
-stacked group per layer: 42,106,880 elements per layer, 1,010,565,120 over the
-24 layers, 4,042 MB on top of the 8.46 GiB the checkpoint's safetensors headers
-report. ``stacked_matmul`` concatenates weights, so that merge also moves the
-DeltaNet projections' 1.01 G MACs per token from bfloat16 into float32. That price
-buys the same 120 sites this copy runs for 44.9 M added MACs per token and no
-weight bytes, so the body is copied. Upstream fix worth filing: a ``deltas``
-argument on ``_gated_delta_core`` and ``GatedDeltaNet``, after which this file is
-one subclass with no body.
+boundary is the tensors themselves. Handing the core a ``ProjectionTensors``
+whose weight is ``base + B @ A`` in float32 writes a dense float32 copy of every
+stacked projection: 4,042 MB over the 24 layers. ``stacked_matmul`` reads that
+weight, so the merge also moves the DeltaNet projections' MACs from bfloat16
+into float32. The 120 delta sites this body adds cost 120 extra matmuls and no
+weight bytes. An upstream seam would take a ``deltas`` argument on
+``_gated_delta_core`` and on ``GatedDeltaNet``.
 
 Where the deltas sit against the recurrence scale: MAX's recurrence output equals
 the reference's times ``1 / sqrt(128)`` = 0.0883882, and ``rms_norm_scaled``
@@ -79,7 +75,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -95,7 +91,6 @@ from max.nn.kernels import (
     kda_chunk_is_registered,
     kda_chunk_supports_head_dims,
 )
-from max.nn.quant_config import QuantConfig
 from max.pipelines.architectures.qwen3_5_modulev3.layers.gated_deltanet import (
     _CHUNK_MIN_COMPUTE_CAPABILITY,
     _OUTPUT_GATE_ACTIVATIONS,
@@ -127,7 +122,6 @@ __all__ = [
     "StateRestart",
     "attention_labels",
     "restart_edges",
-    "restart_segment_index",
     "segment_index_from_edges",
 ]
 
@@ -222,8 +216,8 @@ class StateRestart:
 def restart_edges(labels: Sequence[int], blocks: int) -> list[int]:
     """Returns the ``[blocks + 2]`` token edges of one row, counted on the host.
 
-    ``labels`` is the row's segment label per token, the renderer's
-    ``StateOncePlan.segment_ids``: -1 for the state block and the separator that
+    ``labels`` is the row's segment label per token: -1 for the state block and
+    the separator that
     closes it, ``i`` for question chunk ``i``. The edge before segment ``j``
     counts the tokens whose label is below ``j``, so segment 0 is the state,
     segment ``i + 1`` is chunk ``i``, and the last edge is the row's token count,
@@ -233,7 +227,7 @@ def restart_edges(labels: Sequence[int], blocks: int) -> list[int]:
     edges, and those spans are empty: the kernels walk them and read no rows.
 
     The renderer's labels restart at every row, so the table describes one row
-    per step, which is what the decisions route scores.
+    per step. The decisions route scores one row per step.
 
     The fallback rule: a request that states its spans reaches the step as data
     (:class:`~qwen3_5_decider.batch_processor.SegmentBounds`), and this count
@@ -264,11 +258,13 @@ def segment_index_from_edges(
     how the kernels walk a span of no tokens.
 
     This is the boundary-as-data path: the spans come from the request's own
-    encoders (``StateOncePlan.segment_ids``, ``LocatePlan.segments``) through
+    encoder through
     :meth:`qwen3_5_decider.batch_processor.Qwen3_5DeciderBatchProcessor.token_positions`,
     so a sequence whose chunk ends are not ``<|fim_suffix|>`` still gets one span
-    per question. :func:`restart_segment_index` is the fallback, which counts
-    that token per chunk.
+    per question. :func:`~.attention.marker_segments` is the fallback for the
+    mask: it counts that token in the row's own tokens, and it feeds no
+    per-segment assembly, because a step with no edge table runs one conv and
+    one recurrence call over the row.
     """
     token_index = F.range(
         0,
@@ -296,27 +292,13 @@ def segment_index_from_edges(
 def attention_labels(segment_index: Tensor) -> Tensor:
     """Returns the step's label per token for the segment-masked attention.
 
-    ``segment_index`` is :func:`segment_index_from_edges`' or
-    :func:`restart_segment_index`' index, and the labels are that index less
-    one: the state block is the shared ``-1`` the kernel shows to every token of
-    the row, and question chunk ``i`` is ``i``. Labels stay nondecreasing inside
-    a row, which is what ``flash_attention_ragged_gpu`` asks for.
+    ``segment_index`` is :func:`segment_index_from_edges`' index, and the labels
+    are that index less one: the state block is the shared ``-1`` the kernel
+    shows to every token of the row, and question chunk ``i`` is ``i``.
+    ``flash_attention_ragged_gpu`` asks for labels that stay nondecreasing
+    inside a row.
     """
     return segment_index - 1
-
-
-def restart_segment_index(labels: Tensor, blocks: int) -> Tensor:
-    """Returns the per-token segment index of the step, over ``labels``.
-
-    ``labels`` is :func:`qwen3_5_decider.layers.attention.marker_segments`'
-    label per token, and the index it answers is the operand the per-segment
-    kernel outputs are assembled with (``restarted_states``). Label -1 is
-    segment 0 and chunk ``i`` is segment ``i + 1``, capped at ``blocks`` because
-    the last span runs to the end of the step. Without the cap a token in an
-    extra chunk is assembled from no span at all and its mixer output is zero:
-    at ``blocks = 0`` that is every token past the state block.
-    """
-    return F.elementwise_min(F.cast(labels, DType.int32) + 1, blocks)
 
 
 def _snapshot_rows(pool: BufferValue, rows: TensorValue) -> TensorValue:
@@ -364,8 +346,9 @@ def _gated_delta_core_with_deltas(
     A per-device body, run by :meth:`LocateGatedDeltaNet.forward` through
     :func:`max.functional.call_on_mesh` as the donor does, so each device owns
     its share of the heads and the sharding solver inserts the all-reduce the
-    row-parallel output needs. Structurally the donor's ``_gated_delta_core``;
-    the five deltas and the absent verify path are the port's.
+    row-parallel output needs. Structurally the donor's
+    ``_gated_delta_core``; ``_gated_delta_core_with_deltas`` adds the five
+    deltas and takes no verify path.
 
     The donor's five projections reach this body as bare tensors, so no wrapped
     projection ``forward`` runs: each delta is added where this function splits
@@ -424,8 +407,8 @@ def _gated_delta_core_with_deltas(
     rec_slot_uint32 = state.recurrent_row_id.cast(DType.uint32)
     rec_slot_int32 = state.recurrent_row_id.cast(DType.int32)
     if restart is not None:
-        # The restarted path re-derives both row ids through ``_bounded_row_id``
-        # (see that function for why an out-of-range index needs a check here).
+        # ``_bounded_row_id`` clamps both ids to the pool's rows: neither the
+        # state kernels nor the two state-row copies check a row index.
         conv_slot = _bounded_row_id(state.conv_pool, state.conv_row_id)
         rec_slot_uint32 = _bounded_row_id(
             state.recurrent_pool, state.recurrent_row_id
@@ -527,7 +510,7 @@ def _gated_delta_core_with_deltas(
         # ``restarted_states`` already ran the recurrence, segment by segment.
         # The chunked prefill kernel keeps its own state inside one call over
         # ``cu_seqlens`` and takes no slot index per segment, so the restarted
-        # path stays on the sequential recurrence it ran in ``restart_probe``.
+        # path stays on the sequential recurrence.
         if chunk_servable:
             raise NotImplementedError(
                 "the restarted DeltaNet path runs the sequential recurrence;"
@@ -570,6 +553,10 @@ def _gated_delta_core_with_deltas(
     return with_delta(base_out, gated, out_pair, adapter_gate)
 
 
+_ROW_BOUND_GAP_LOGGED = False
+"""True once a build has logged the unclampable state-row bound."""
+
+
 def _bounded_row_id(pool: Tensor, row_id: Tensor) -> Tensor:
     """Returns ``row_id`` held inside the row range of ``pool``.
 
@@ -603,10 +590,6 @@ def _bounded_row_id(pool: Tensor, row_id: Tensor) -> Tensor:
     return F.clamp(row_id.cast(DType.int32), 0, rows - 1).cast(DType.uint32)
 
 
-_ROW_BOUND_GAP_LOGGED = False
-"""True once a build has logged the unclampable state-row bound."""
-
-
 def restarted_states(
     qkv_f32: Tensor,
     decay: Tensor,
@@ -633,9 +616,8 @@ def restarted_states(
     slot. That store lands before the span's own head token reads the window, so
     the head tokens convolve the previous span's last ``kernel_size - 1`` tokens
     and every later token inherits the wrong state.
-    A probe over one row with one question, where the split owes no change
-    at all, measures the damage of that extra store at ``2.5397e-02`` of
-    probability deviation, and ``0.000e+00`` once only the last span writes.
+    One row and one question, a split that owes no change at all, still
+    answers differently once every span writes the window.
 
     Segment 0 leaves the window holding the end of the state block and no later
     span moves it, which is the look-back every span needs. The conv row at the
@@ -648,20 +630,18 @@ def restarted_states(
     ``input_row_offsets`` span, so the per-segment outputs are gathered back
     into one row per token by the segment index of that token.
 
-    The gather is a select, not a masked sum, and that is not a style choice.
-    ``gated_delta_recurrence_fwd`` writes the rows of its span and leaves the
-    rest of its output buffer as it found it (``max/kernels/src/state_space/
-    gated_delta.mojo:403`` walks ``range(sequence_start_flat_idx,
-    sequence_end_flat_idx)``), and what an unwritten row holds is whatever the
-    allocator last put there. Multiply that buffer by a 0/1 mask and add, and
-    every unwritten cell contributes ``NaN * 0``, which is ``NaN``, so a layer
-    reports non-finite values for rows it never read. ``spike``-side taps over
-    the served 4090 build counted 0 non-finite cells in the rows a call owns
-    and 315,400 in the rows a 106-token step left unwritten, at the first
-    linear layer, with every answer of that step then refused as non-finite;
-    the same build on Apple silicon reads those rows as zero and answers. A
-    select takes one branch per element and never touches the other, so an
-    unwritten row cannot reach the output of the segment that does not own it.
+    The gather is a select, not a masked sum. ``gated_delta_recurrence_fwd``
+    writes the rows of its span and leaves the rest of its output buffer as it
+    found it (``max/kernels/src/state_space/gated_delta.mojo:403`` walks
+    ``range(sequence_start_flat_idx, sequence_end_flat_idx)``), and an
+    unwritten row holds whatever the allocator last put there. Multiply that
+    buffer by a 0/1 mask and add: an unwritten cell holding a NaN contributes
+    ``NaN * 0``, which is ``NaN``, so the layer reports non-finite values for
+    rows it never read. A select takes one branch per element and never
+    touches the other, so an unwritten row cannot reach the output of the
+    segment that does not own it. A served NVIDIA build refused every answer
+    of a step that way; the same build on Apple silicon reads those rows as
+    zero and answers.
     """
     table = restart.value
     segment_index = restart.segment_index
@@ -719,12 +699,12 @@ def restarted_states(
 class LocateGatedDeltaNet(GatedDeltaNet):
     """Qwen3.5 gated DeltaNet that adds each projection's adapter delta.
 
-    The parameters -- ``in_proj_qkv`` kept on the host and segmented per device,
-    ``in_proj_z``/``in_proj_b``/``in_proj_a`` split by head, ``out_proj`` split
-    by input, and the conv, decay and norm scalars -- are the donor's
-    ``__init__`` unchanged, so the layer loads the same checkpoint tensors as the
-    mixer it replaces. Only ``forward`` is re-declared, to bind the core that
-    reads the five ``(lora_a, lora_b)`` pairs.
+    The parameters come from the donor's ``__init__``, so the layer loads the
+    same checkpoint tensors as the mixer it replaces: ``in_proj_qkv`` kept on
+    the host and segmented per device, ``in_proj_z``/``in_proj_b``/``in_proj_a``
+    split by head, ``out_proj`` split by input, and the conv, decay and norm
+    scalars. Only ``forward`` is re-declared, to bind the core that reads the
+    five ``(lora_a, lora_b)`` pairs.
     """
 
     restart: StateRestart | None = None
@@ -735,43 +715,6 @@ class LocateGatedDeltaNet(GatedDeltaNet):
     passes this to the core, and the core refuses a restarted call whose table
     or segment index is unset.
     """
-
-    def __init__(
-        self,
-        *,
-        hidden_size: int,
-        num_key_heads: int,
-        num_value_heads: int,
-        key_head_dim: int,
-        value_head_dim: int,
-        conv_kernel_size: int,
-        dtype: DType,
-        rms_norm_eps: float,
-        ssm_dtype: DType = DType.float32,
-        quant_config: QuantConfig | None = None,
-        output_gate_type: str = "swish",
-        scalar_dtypes: Mapping[str, DType] | None = None,
-    ) -> None:
-        """Builds the donor layer, argument for argument.
-
-        The donor's keyword-only signature is spelled out rather than forwarded
-        as ``*args`` and ``**kwargs``, so a call site that names an argument the
-        mixer does not take fails here with the argument's name.
-        """
-        super().__init__(
-            hidden_size=hidden_size,
-            num_key_heads=num_key_heads,
-            num_value_heads=num_value_heads,
-            key_head_dim=key_head_dim,
-            value_head_dim=value_head_dim,
-            conv_kernel_size=conv_kernel_size,
-            dtype=dtype,
-            rms_norm_eps=rms_norm_eps,
-            ssm_dtype=ssm_dtype,
-            quant_config=quant_config,
-            output_gate_type=output_gate_type,
-            scalar_dtypes=scalar_dtypes,
-        )
 
     def forward(
         self,
@@ -787,8 +730,8 @@ class LocateGatedDeltaNet(GatedDeltaNet):
         """
         if self.verify is not None:
             raise NotImplementedError(
-                "LocateGatedDeltaNet has no speculative verify path; this port"
-                " registers no speculative target"
+                "LocateGatedDeltaNet has no speculative verify path;"
+                " qwen3_5_decider registers no speculative target"
             )
         mesh = x.mesh
         num_devices = mesh.num_devices

@@ -22,11 +22,11 @@ MLP elements would be bound to weights no op consumes.
 
 ``LocateMLP`` keeps the donor's parameters and calls the three projections as
 modules, so all three wrapped forwards run and each delta multiplies the same
-input its base matmul got, as ``LoRALinear.forward`` arranges
-(``locate.py:83-92``). The fusion is given up for a folded build: two matmuls
-of ``[intermediate, hidden]`` against one of ``[2 * intermediate, hidden]``.
-Only a folded build takes this class, so the decisions path keeps the donor's
-fused body and the probabilities it has always answered.
+input its base matmul got, as the reference's ``LoRALinear.forward`` does. The
+fusion is given up for a folded build: two matmuls of
+``[intermediate, hidden]`` against one of ``[2 * intermediate, hidden]``.
+Only a folded build takes :class:`LocateMLP`, so the decisions path keeps the
+donor's fused body and the probabilities it has always answered.
 """
 
 from __future__ import annotations
