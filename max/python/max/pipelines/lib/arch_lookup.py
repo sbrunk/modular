@@ -997,8 +997,7 @@ table.
 
 @dataclass(frozen=True)
 class _NameAlias:
-    """A declared HF architecture name that means another architecture for
-    checkpoints carrying a marker file.
+    """A checkpoint's declared name, claimed for another architecture.
 
     A checkpoint saved from a backbone class declares the bare backbone name
     in ``config.json``, which says nothing about which MAX architecture wants
@@ -1039,8 +1038,10 @@ unaffected: the predicate rejects it and the declared name stands."""
 
 
 def resolve_name_alias(architecture_name: str, model_path: str) -> str | None:
-    """Returns the architecture name ``architecture_name`` resolves to for the
-    checkpoint at ``model_path``, or ``None`` to keep the declared name.
+    """Returns the name ``architecture_name`` resolves to for one checkpoint.
+
+    The alias's name for a checkpoint its predicate accepts, or ``None`` to
+    keep the declared name.
 
     Called by
     :func:`max.pipelines.lib._model_components.architecture_name_for` when it
