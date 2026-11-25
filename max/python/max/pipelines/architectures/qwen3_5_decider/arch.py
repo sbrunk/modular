@@ -17,7 +17,8 @@
 ``config.json`` declares ``architectures[0] == "Qwen3_5Model"``: the bare
 backbone class name, not a ``ForConditionalGeneration`` or ``ForCausalLM``
 head, and no other built-in claims that bare name. A checkpoint declaring it
-is routed here by the name alias in :mod:`max.pipelines.architectures`, which
+is routed to this package by the name alias in
+:mod:`max.pipelines.architectures`, which
 consults :func:`.detection.accepts_decider_checkpoint` first, so
 ``max serve --model-path <checkpoint>`` resolves with no flag and no
 ``--custom-architectures``.
@@ -33,8 +34,8 @@ checkpoint's two extras. The batch processor is the donor's subclass in
 Deltas from the donor registration:
 
 - **No ``VISION`` module, no M-RoPE, no speculative pairing, no format/tool/
-  reasoning parser.** Protocol v4 here is text, and the graph is scored once
-  per row rather than generated from.
+  reasoning parser.** Protocol v4 questions are text, and the graph is scored
+  once per row rather than generated from.
 - **Single device.** ``multi_gpu_supported`` stays False: this architecture
   is exercised on one accelerator, and the tensor-parallel paths it inherits
   are untested with the readout head and the state rewind.
@@ -51,8 +52,8 @@ Deltas from the donor registration:
   else in MAX's config resolution writes either one back on. ``--force`` is
   the one way past them,
   and :func:`qwen3_5_decider.model_config.require_whole_row_execution`
-  closes that route: the port refuses the build, naming the flags, rather than
-  serve probabilities computed against another question's state.
+  closes that route: it refuses the build and names the flags before a graph
+  can serve probabilities computed against another question's state.
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ qwen3_5_decider_arch = SupportedArchitecture(
     # prefill per request.
     supports_device_graph_capture=False,
     # The plain text-generation pipeline owns the scoring path the decisions
-    # routes use, which keeps the port to one execution path.
+    # routes use; the overlap scheduler would add a second execution path.
     supports_overlap_scheduler=False,
     required_arguments={
         "enable_chunked_prefill": False,

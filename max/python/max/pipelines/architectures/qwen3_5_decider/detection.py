@@ -11,7 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""The checkpoint evidence that resolves the bare ``Qwen3_5Model`` name here.
+"""The checkpoint evidence that resolves the bare ``Qwen3_5Model`` name.
 
 A checkpoint saved from the Qwen3.5 backbone class declares ``config.json``'s
 ``architectures[0]`` as the bare ``Qwen3_5Model``, with no
@@ -23,7 +23,7 @@ the answer-code table the vendor's protocol, readout and calibration all read.
 
 The predicate runs while the declared name is being resolved, before this
 architecture's module is imported, so it stays a directory check and reaches
-nothing inside the checkpoint. The decision head itself needs no test here:
+nothing inside the checkpoint. The decision head needs no separate check:
 :class:`.model_config.Qwen3_5DeciderConfig` counts its rows from
 ``readout.weight`` at finalize, and a checkpoint missing that tensor stops
 there with the head named.

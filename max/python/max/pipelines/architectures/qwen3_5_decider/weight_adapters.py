@@ -32,8 +32,8 @@ donor serves. Two rules are added for the shape this checkpoint actually uses:
 
 No ``Ignore`` rule is added for the vision tower or the Locate tensors: they
 load, match no parameter, and the coverage audit in :mod:`.decider` reports
-them as left out on purpose, with a count. That is what keeps drift in this
-table visible, which the graph-API spike's blanket ignores hid.
+them as left out on purpose, with a count. A blanket ``Ignore`` rule here would
+drop a tensor stranded by a later rename without a word.
 """
 
 from __future__ import annotations

@@ -21,7 +21,7 @@ gated-DeltaNet scalar dtypes, and the cache tree
 (:meth:`Qwen3_5Config.construct_kv_params`) whose recurrent leaves are what
 select the Jenga state pool.
 
-Deltas layered on top for this port:
+Deltas the decider's config layers on top of the donor's:
 
 - **No vision tower, no M-RoPE.** The checkpoint ships a ``vision_config`` and
   an ``mrope_section``, so the donor config would build a tower and take
@@ -73,8 +73,8 @@ __all__ = [
 READOUT_WEIGHT_KEY = "readout.weight"
 """The adapted checkpoint name of the decision head's single tensor.
 
-``readout.safetensors`` stores it as ``weight``; the port's weight rules name
-it after the module that reads it (see :mod:`.weight_adapters`).
+``readout.safetensors`` stores it as ``weight``; the decider's weight rules
+name it after the module that reads it (:mod:`.weight_adapters`).
 """
 
 EMBED_LOCATE_KEY = "embed_tokens.locate"
@@ -227,7 +227,7 @@ class Qwen3_5DeciderConfig(Qwen3_5Config):
 
     DEFAULT_ENCODING: ClassVar[SupportedEncoding] = "bfloat16"
     """The serving dtype. The fp32 copy of the weights is a measurement
-    substrate, not a serving path this port chases."""
+    substrate; the decider serves bfloat16."""
 
     readout_rows: int = 0
     """Rows of the readout: the answer codes the head scores (255 here)."""
@@ -257,13 +257,13 @@ class Qwen3_5DeciderConfig(Qwen3_5Config):
         """Reads the donor's config, then removes the vision and M-RoPE parts.
 
         ``vision_config`` is what the donor uses as "an image can appear in
-        this context", so clearing it both drops the tower the port never
+        this context", so clearing it drops the tower the decider never
         registers and turns M-RoPE off; ``mrope_section`` is cleared with it
         so the static rotary table is the one the graph builds.
 
-        This is also where the port refuses an impossible launch: the hook is
-        reached from ``ArchConfig.initialize`` while the pipeline is being
-        built, and it receives the resolved config, so
+        :meth:`initialize_from_config` also refuses an impossible launch: the
+        hook is reached from ``ArchConfig.initialize`` while the pipeline is
+        being built, and it receives the resolved config, so
         :func:`require_whole_row_execution` can see whether the registration's
         pins are still in force.
 
@@ -307,7 +307,7 @@ class Qwen3_5DeciderConfig(Qwen3_5Config):
             raise ValueError(
                 f"the adapted checkpoint has no {READOUT_WEIGHT_KEY!r};"
                 " the decider's head comes from readout.safetensors, whose"
-                " single tensor 'weight' the port's weight rules rename"
+                " single tensor 'weight' the decider's weight rules rename"
             )
         config.readout_rows = int(readout.shape[0])
         config.adapter_rank, config.locate_marker_id = _read_adapter(state_dict)
@@ -318,7 +318,7 @@ class Qwen3_5DeciderConfig(Qwen3_5Config):
     def estimate_vision_cache_entry_bytes(
         cls, huggingface_config: AutoConfig
     ) -> int:
-        """Zero: this port compiles no vision encoder for any checkpoint."""
+        """Zero: the decider compiles no vision encoder for any checkpoint."""
         del huggingface_config
         return 0
 

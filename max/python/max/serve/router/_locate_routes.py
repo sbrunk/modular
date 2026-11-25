@@ -22,11 +22,12 @@ checkpoint ships a span head (see
 packages can still contribute their own engine through
 ``MAX_SERVE_EXTRA_ROUTES`` (see :func:`max.serve.api_server.resolve_extra_routers`).
 
-No scoring step is involved. A locate answer needs one row per state token and
-a probability per span, and the worker returns
-``TextGenerationOutput.label_log_probabilities`` for candidate tokens alone, so
-the engine reaches the rows by its own route. Where those rows came from stays
-inside the engine: the response reports spans, not their provenance.
+The engine reads hidden rows, not candidate scores. It calls ``score`` with
+``label_hidden=True`` at the positions the request names, and the step returns
+those rows on :attr:`TextGenerationOutput.label_hidden_rows`. No candidate
+token is named, so :attr:`TextGenerationOutput.label_log_probabilities` stays
+empty. The rows' provenance stays inside the engine: the response reports
+spans.
 """
 
 from __future__ import annotations

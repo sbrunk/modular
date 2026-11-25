@@ -19,8 +19,8 @@ head is the single 255-row tensor in ``readout.safetensors``. It registers as
 ``Qwen3_5DeciderModel``: a text-generation decoder whose
 ``next_token_logits`` are readout scores, one row per protocol-v4 question,
 taken at that question's answer marker. The checkpoint declares only the bare
-backbone name in its ``config.json``, and :mod:`.detection` is what resolves
-that name here.
+backbone name in its ``config.json``, and :mod:`.detection` resolves that
+name.
 """
 
 from __future__ import annotations

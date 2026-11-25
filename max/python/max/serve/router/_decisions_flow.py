@@ -118,6 +118,15 @@ def check_capacity(
     :attr:`~max.serve.router._decision_format.DecisionFormat.limits` before it
     encodes one row.
 
+    The schemas admit up to ``MAX_CANDIDATES_PER_REQUEST`` candidates per
+    question and ``MAX_QUESTIONS`` questions. A format labeling fewer
+    candidates than the schemas admit sets a tighter choice and level
+    ceiling, and this function refuses the question. The question cap fires
+    only for joint v4: the chat and decider formats report
+    ``MAX_QUESTIONS``, the count the schemas already enforced. Joint v4
+    reports the count its checkpoint declares, and a checkpoint declaring
+    none leaves ``limits.questions`` ``None`` with the cap skipped.
+
     Args:
         limits: What the serving format can answer per question.
         items: Each question's id and view.

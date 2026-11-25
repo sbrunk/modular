@@ -2015,9 +2015,12 @@ components:
           maxItems: 64
           description: |
             The questions to answer. Specify 1 to 64 questions, each with a
-            unique `id`. A `choice` question must have 2 to 26 options, and a
-            `score` question must have 2 to 10 levels. Decider models support
-            at most 10 options per `choice` question.
+            unique `id`. The schema admits 2 to 1024 candidates per question.
+            The prompt wording of the served model answers fewer, and a
+            question wider than that gets 400 naming the question: a chat
+            model labels options `A` to `Z` and levels `0` to `9`, a decider
+            model labels both `A` to `J`, and a model with an answer-code
+            readout answers as many candidates as it has codes.
           items:
             oneOf:
               - $ref: '#/components/schemas/DecisionChoiceQuestion'
