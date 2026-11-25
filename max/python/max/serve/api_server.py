@@ -63,6 +63,7 @@ from max.serve.router import (
 )
 from max.serve.router._decision_format import detect_decision_format
 from max.serve.router._image_resolution import fetch_media_data_uri
+from max.serve.router._locate_flow import locate_router_for_model
 from max.serve.telemetry.common import (
     _telemetry_disabled,
     send_telemetry_log,
@@ -221,6 +222,16 @@ async def lifespan(
                 metric_client,
                 zmq_endpoint_base,
             )
+            if APIType.OPENAI in settings.api_types:
+                # A checkpoint that ships a Locate span head answers
+                # /v1/locate from the pipeline just started here: one
+                # forward pass and the head's tiny graph over its rows,
+                # no second model copy and no setting to name the route.
+                locate = locate_router_for_model(
+                    serving_settings.pipeline_config.models["main"].model_path
+                )
+                if locate is not None:
+                    app.include_router(locate)
 
         logger.info(
             f"\n\n{'*' * 80}\n\n"

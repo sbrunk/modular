@@ -24,6 +24,7 @@ HTTP 501: the engine's rows do not cover that request.
 
 from __future__ import annotations
 
+from fastapi import Request
 from max.serve.router._decisions_flow import LocateRowsUnavailable
 from max.serve.router._locate_routes import locate_router
 from max.serve.schemas._locate import (
@@ -41,7 +42,9 @@ MODEL = "stub-locate"
 class StubLocateEngine:
     """Answers every question with the first 12 characters of its state."""
 
-    def answer(self, locate_request: LocateRequest) -> LocateResponse:
+    async def answer(
+        self, locate_request: LocateRequest, request: Request
+    ) -> LocateResponse:
         if locate_request.state.startswith("RAISE"):
             raise LocateRowsUnavailable(
                 "the rows this server holds cover 512 state tokens, this "

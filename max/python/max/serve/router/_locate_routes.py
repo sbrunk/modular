@@ -16,7 +16,10 @@
 The route owns the wire: it validates the body, calls the engine, maps the
 engine's refusals to HTTP and writes the response. Planning the sequence,
 reading the state's hidden rows and turning the span head's grid into spans
-belong to the engine, which an outside package builds and registers through
+belong to the engine. The server mounts one automatically when the served
+checkpoint ships a span head (see
+:func:`~max.serve.router._locate_flow.locate_router_for_model`); outside
+packages can still contribute their own engine through
 ``MAX_SERVE_EXTRA_ROUTES`` (see :func:`max.serve.api_server.resolve_extra_routers`).
 
 No scoring step is involved. A locate answer needs one row per state token and
@@ -28,7 +31,6 @@ inside the engine: the response reports spans, not their provenance.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Protocol
 
@@ -44,7 +46,9 @@ logger = logging.getLogger("max.serve")
 class LocateEngine(Protocol):
     """Answers one locate request body with spans over its state.
 
-    ``answer`` raises
+    ``answer`` receives the incoming request beside the body: an engine
+    that answers from the running pipeline reads it from the request's
+    app state. It raises
     :class:`~max.serve.router._decisions_scoring.DecisionRequestError` for a
     body this server cannot answer and
     :class:`~max.serve.router._decisions_flow.LocateRowsUnavailable` for state
@@ -52,7 +56,9 @@ class LocateEngine(Protocol):
     500.
     """
 
-    def answer(self, locate_request: LocateRequest) -> LocateResponse: ...
+    async def answer(
+        self, locate_request: LocateRequest, request: Request
+    ) -> LocateResponse: ...
 
 
 def locate_router(engine: LocateEngine) -> APIRouter:
@@ -73,9 +79,9 @@ def locate_router(engine: LocateEngine) -> APIRouter:
     async def create_locate(request: Request) -> JSONResponse:
         """Answers locate questions with spans over the request's state.
 
-        The body is validated on the event loop and the engine runs on a worker
-        thread, since planning and the span grid are CPU-bound and touch no
-        asyncio state.
+        The body is validated on the event loop and the engine awaits the
+        scoring step itself; only its span head, a host graph, leaves the
+        event loop.
         """
         request_id = request.state.request_id
         try:
@@ -87,14 +93,7 @@ def locate_router(engine: LocateEngine) -> APIRouter:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
         async with decision_errors(request, "/v1/locate"):
-            response = await _run_engine(engine, locate_request)
+            response = await engine.answer(locate_request, request)
         return JSONResponse(content=response.model_dump(exclude_none=True))
 
     return router
-
-
-async def _run_engine(
-    engine: LocateEngine, locate_request: LocateRequest
-) -> LocateResponse:
-    """Runs the engine off the event loop."""
-    return await asyncio.to_thread(engine.answer, locate_request)

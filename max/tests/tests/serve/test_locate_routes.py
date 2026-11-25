@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from max.serve.request import register_request
 from max.serve.router._locate_routes import locate_router
@@ -36,7 +36,9 @@ class FakeEngine:
     def __init__(self) -> None:
         self.seen: list[LocateRequest] = []
 
-    def answer(self, locate_request: LocateRequest) -> LocateResponse:
+    async def answer(
+        self, locate_request: LocateRequest, request: Request
+    ) -> LocateResponse:
         self.seen.append(locate_request)
         state = locate_request.state
         return LocateResponse(
