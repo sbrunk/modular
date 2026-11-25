@@ -201,7 +201,10 @@ class DeciderFormat:
                             f"{max_length} tokens"
                         )
                     rows.append(
-                        EncodedRow(prompt_ids, label_ids[: len(row.options)])
+                        EncodedRow(
+                            tuple(prompt_ids),
+                            label_ids[: len(row.options)],
+                        )
                     )
             except (ValueError, InputError) as e:
                 raise DecisionRequestError(

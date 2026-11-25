@@ -52,15 +52,17 @@ class DecisionRequestError(ValueError):
 class EncodedRow:
     """One prompt to score and the label tokens read at its end."""
 
-    prompt_ids: list[int]
+    prompt_ids: tuple[int, ...]
     """The prompt, sent to the scorer as token ids so the labels stay valid
     next-token candidates after exactly this tokenization."""
     label_ids: list[int]
     label_positions: list[int] | None = None
-    """Positions inside ``prompt_ids`` to read this row's labels at. Several
-    questions can name the same ``prompt_ids`` and each name one position: the
-    route scores that prompt once and reads one score row per position. With
-    ``None`` the prompt is scored at its last position, alone."""
+    """Prompt positions inside ``prompt_ids`` to read this row's labels at.
+
+    A row names at most one position; several positions arrive as several
+    rows sharing one prompt. The route scores that prompt once and reads one
+    score row per position. ``None`` scores the prompt at its last position.
+    """
 
 
 @dataclass(frozen=True)
@@ -142,7 +144,7 @@ async def score_all(
     groups: dict[tuple[object, object], list[int]] = {}
     for index, row in enumerate(rows):
         key: tuple[object, object] = (
-            ("prompt", tuple(row.prompt_ids))
+            ("prompt", row.prompt_ids)
             if row.label_positions is not None
             else ("row", index)
         )
@@ -152,7 +154,7 @@ async def score_all(
     # positions and candidate lists are settled before any task starts so a row
     # that names too many positions is refused without leaving launches behind.
     asked: list[
-        tuple[list[int], list[int] | list[list[int]], list[int] | None]
+        tuple[Sequence[int], list[int] | list[list[int]], list[int] | None]
     ] = [
         (
             rows[members[0]].prompt_ids,
@@ -167,7 +169,7 @@ async def score_all(
                 TextGenerationRequest(
                     request_id=RequestID(f"{request_id}_{group}"),
                     model_name=model_name,
-                    prompt=prompt,
+                    prompt=list(prompt),
                     sampling_params=SamplingParams(top_k=1, temperature=0),
                     timestamp_ns=request.state.request_timer.start_ns,
                     request_path=request.url.path,
@@ -258,8 +260,9 @@ def usage_totals(
     """Total prompt tokens, and prefix-cache hits if the pipeline reports them.
 
     A prompt shared by several questions is scored once, so its tokens are
-    counted once. ``encoded`` names the rows each result belongs to; without
-    it every result counts as a row of its own.
+    counted once. ``encoded`` names the rows each result belongs to. It is
+    ``None`` when the request's rows were not pre-encoded, and the totals
+    then count the rows the scoring step produced.
     """
     flat = [result for rows in results for result in rows]
     if encoded is None:
@@ -270,7 +273,7 @@ def usage_totals(
         shared: set[tuple[int, ...]] = set()
         for row, result in zip(rows, flat, strict=True):
             if row.label_positions is not None:
-                key = tuple(row.prompt_ids)
+                key = row.prompt_ids
                 if key in shared:
                     continue
                 shared.add(key)

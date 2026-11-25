@@ -46,7 +46,10 @@ modular_py_test(
     }),
     deps = [
         "//max/python/max:_core",
+        "//max/python/max/driver",
         "//max/python/max/dtype",
+        "//max/python/max/engine",
+        "//max/python/max/graph",
         "//max/python/max/nn:core",
         "//max/python/max/nn/legacy",
         "//max/python/max/pipelines/architectures/hy_v4",
@@ -92,6 +95,7 @@ modular_py_test(
         requirement("pydantic"),
         requirement("pytest-asyncio"),
         requirement("pyzmq"),
+        requirement("safetensors"),
         requirement("sse-starlette"),
         requirement("starlette"),
         requirement("taskgroup"),

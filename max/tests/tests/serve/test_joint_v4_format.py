@@ -286,7 +286,7 @@ def test_declared_max_questions_bounds_the_request() -> None:
 def test_scores_apply_the_checkpoint_temperature_once() -> None:
     format_ = JointV4Format(_settings())
     view = _choice("x", "y", "z")
-    question = EncodedQuestion("q", view, [EncodedRow([1, 2], [0, 1, 2])])
+    question = EncodedQuestion("q", view, [EncodedRow((1, 2), [0, 1, 2])])
     log_probabilities = [-1.0, -2.0, -3.0]
     scored = format_.scores(
         question,

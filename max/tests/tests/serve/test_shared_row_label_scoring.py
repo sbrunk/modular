@@ -111,7 +111,7 @@ async def _score_all(
 def test_one_row_naming_one_position_is_scored() -> None:
     """A one-member position group keeps the positions shape, and answers."""
     pipeline = _StubPipeline()
-    encoded = _encode(EncodedRow([1, 2, 3], [7, 9], [2]))
+    encoded = _encode(EncodedRow((1, 2, 3), [7, 9], [2]))
     results = asyncio.run(_score_all(pipeline, encoded))
     assert pipeline.asked == [([[7, 9]], [2])]
     assert results[0][0].label_log_probabilities == [20.0, 21.0]
@@ -120,7 +120,7 @@ def test_one_row_naming_one_position_is_scored() -> None:
 def test_two_questions_on_one_prompt_are_scored_once() -> None:
     """Members of one prompt share a scoring request and get their own rows."""
     pipeline = _StubPipeline()
-    shared = [1, 2, 3, 4]
+    shared = (1, 2, 3, 4)
     encoded = _encode(
         EncodedRow(shared, [7, 9], [1]),
         EncodedRow(shared, [3], [4]),
@@ -137,7 +137,7 @@ def test_two_questions_on_one_prompt_are_scored_once() -> None:
 def test_a_row_naming_two_positions_is_a_request_error() -> None:
     """One question reads one row, and the second position would be dropped."""
     pipeline = _StubPipeline()
-    encoded = _encode(EncodedRow([1, 2, 3, 4], [7, 9], [1, 4]))
+    encoded = _encode(EncodedRow((1, 2, 3, 4), [7, 9], [1, 4]))
     with pytest.raises(DecisionRequestError, match="names 2 label positions"):
         asyncio.run(_score_all(pipeline, encoded))
     assert pipeline.asked == []
@@ -145,7 +145,7 @@ def test_a_row_naming_two_positions_is_a_request_error() -> None:
 
 def test_a_prompt_shared_by_two_questions_is_billed_once() -> None:
     """``usage_totals`` counts the prompt the scorer read once."""
-    shared = [1, 2, 3, 4]
+    shared = (1, 2, 3, 4)
     encoded = _encode(
         EncodedRow(shared, [7, 9], [1]),
         EncodedRow(shared, [3], [4]),

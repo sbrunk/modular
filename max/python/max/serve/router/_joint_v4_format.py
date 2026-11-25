@@ -68,6 +68,9 @@ from huggingface_hub.errors import (
     HFValidationError,
     RepositoryNotFoundError,
 )
+from max.pipelines.architectures.qwen3_5_decider.detection import (
+    DECISION_CONFIG_FILE,
+)
 from max.pipelines.architectures.qwen3_5_decider.layers.attention import (
     MARKER_TOKEN_ID,
     SEPARATOR_TOKEN_ID,
@@ -108,8 +111,6 @@ rendering."""
 JOINT_CONFIG_FILE = "joint_config.json"
 """The file that declares a checkpoint's joint protocol; the answer-code
 settings live in ``decision_config.json``, not ``decider_config.json``."""
-
-DECISION_CONFIG_FILE = "decision_config.json"
 
 JOINT_TEMPLATE = "joint-chunked-readout-v1"
 """The only template protocol v4 defines."""
@@ -313,7 +314,7 @@ def option_rows(view: QuestionView) -> tuple[list[str], list[int]]:
 
     Raises:
         ValueError: If a ``yes_no`` question is not named ``yes`` and ``no``
-            in that order, which is what every MAX route builds.
+            in that order. Every MAX route builds that order.
     """
     if view.kind == "choice":
         lines = [
@@ -646,7 +647,9 @@ class JointV4Format:
                 ) from e
             encoded.append(
                 EncodedQuestion(
-                    question_id, view, [EncodedRow(prompt_ids, label_ids)]
+                    question_id,
+                    view,
+                    [EncodedRow(tuple(prompt_ids), label_ids)],
                 )
             )
         return encoded
@@ -662,9 +665,9 @@ class JointV4Format:
 
         The row states the context once, closes it with the separator, and
         appends one chunk per question, each ending in its own readout
-        marker. The served architecture cuts the row at those markers --
-        its segment machinery counts the marker tokens inside the row -- so
-        every question attends the state and its own chunk and no other
+        marker. The served architecture cuts the row at those markers: its
+        segment machinery counts the marker tokens inside the row. Each
+        question then attends the state and its own chunk and no other
         question's. Each question comes back as its own
         :class:`EncodedQuestion` naming the shared prompt and the position
         of its marker, the shape ``score_all`` groups into one scoring
@@ -689,8 +692,6 @@ class JointV4Format:
             raise DecisionRequestError(
                 f"the state cannot be rendered: {e}"
             ) from e
-        if not items:
-            raise DecisionRequestError("a decision request has no question")
 
         prompt_ids = context_ids + [separator_id]
         placements: list[tuple[list[int], int]] = []
@@ -719,7 +720,7 @@ class JointV4Format:
             EncodedQuestion(
                 question_id,
                 view,
-                [EncodedRow(prompt_ids, label_ids, [marker_row])],
+                [EncodedRow(tuple(prompt_ids), label_ids, [marker_row])],
             )
             for (question_id, view), (label_ids, marker_row) in zip(
                 items, placements, strict=True
@@ -735,8 +736,8 @@ class JointV4Format:
         """Option probabilities, and readout mass over this question's codes.
 
         Args:
-            item: The encoded question, which this format always encodes to
-                one row -- a shared row still answers one question.
+            item: The encoded question. This format always encodes it to one
+                row: a shared row still answers one question.
             results: That row's scoring result, whose
                 ``label_log_probabilities`` are one value per candidate in
                 ``item.view.names`` order: the row was scored against

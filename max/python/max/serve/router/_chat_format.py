@@ -219,5 +219,5 @@ async def _encode_question(
     except (ValueError, InputError) as e:
         raise DecisionRequestError(f"question {question_id!r}: {e}") from e
     return EncodedQuestion(
-        question_id, view, [EncodedRow(prompt_ids, label_ids)]
+        question_id, view, [EncodedRow(tuple(prompt_ids), label_ids)]
     )
