@@ -209,10 +209,11 @@ class BatchLabelScorer:
 
         The same rows :meth:`score` reads candidates in, one stage before
         the head: a context that set :attr:`TextContext.label_hidden` reads
-        them itself instead of naming candidates. Rows land in gather order
-        -- the order :meth:`BatchProcessor.label_positions` names them, one
-        entry per position the context named and one next-token row for
-        every other context -- and each asking request gets its own slice.
+        them itself instead of naming candidates. Rows land in gather order,
+        and each asking request gets its own slice. Gather order is the order
+        :meth:`BatchProcessor.label_positions` names them: one entry per
+        position the context named and one next-token row for every other
+        context.
 
         Args:
             model_outputs: Outputs of this step's forward pass. A model
@@ -229,6 +230,8 @@ class BatchLabelScorer:
             RuntimeError: If the gathered rows and the batch's named counts
                 disagree, which means the model and the batch processor
                 counted the step differently.
+            ValueError: If a context names positions and candidate groups
+                in different counts, or one without the other.
         """
         buffer = model_outputs.label_hidden
         if buffer is None:
@@ -246,14 +249,7 @@ class BatchLabelScorer:
         for context in flat_batch:
             if not isinstance(context, TextContext):
                 continue
-            if (
-                context.label_positions is not None
-                and not context.tokens.actively_chunked
-                and context.tokens.generated_length == 0
-            ):
-                count = len(context.label_positions)
-            else:
-                count = 1
+            count = len(_asked_labels(context))
             if context.label_hidden:
                 out[context.request_id] = rows[cursor : cursor + count]
             cursor += count

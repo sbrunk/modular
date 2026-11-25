@@ -25,20 +25,12 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
-from max.pipelines.context import TextContext
+from label_context_fakes import label_context
 from max.pipelines.lib.interfaces import ModelOutputs
 from max.pipelines.lib.pipeline_variants._label_scoring import (
     BatchLabelScorer,
     _asked_labels,
 )
-
-
-@dataclass
-class _Tokens:
-    """The two token counters the scorer reads."""
-
-    actively_chunked: bool = False
-    generated_length: int = 0
 
 
 @dataclass
@@ -82,28 +74,10 @@ def _scorer() -> tuple[BatchLabelScorer, _StubLabelScorer]:
     return batch_scorer, stub
 
 
-def _context(
-    request_id: str,
-    label_token_ids: list[int] | None = None,
-    label_positions: list[int] | None = None,
-    label_token_id_groups: list[list[int]] | None = None,
-    label_hidden: bool = False,
-) -> TextContext:
-    """A scoring context built without a tokenizer or a token buffer."""
-    context = TextContext.__new__(TextContext)
-    context.request_id = request_id  # type: ignore[assignment]
-    context.tokens = _Tokens()  # type: ignore[assignment]
-    context.label_token_ids = label_token_ids
-    context.label_positions = label_positions
-    context.label_token_id_groups = label_token_id_groups
-    context.label_hidden = label_hidden
-    return context
-
-
 def test_one_position_keeps_the_single_score_list() -> None:
     """A request that named no position contributes one row of scores."""
     batch_scorer, stub = _scorer()
-    results = batch_scorer.score(_outputs(), [_context("a", [7, 9])])
+    results = batch_scorer.score(_outputs(), [label_context("a", [7, 9])])
     assert results == {"a": [[0.0, 2.0]]}
     assert stub.asked == [[7, 9]]
 
@@ -111,7 +85,7 @@ def test_one_position_keeps_the_single_score_list() -> None:
 def test_named_positions_return_one_list_per_position() -> None:
     """The shared row asks three markers and gets three score rows back."""
     batch_scorer, stub = _scorer()
-    context = _context(
+    context = label_context(
         "shared",
         label_token_ids=[11, 12],
         label_positions=[4, 9, 13],
@@ -125,8 +99,8 @@ def test_named_positions_return_one_list_per_position() -> None:
 def test_a_generating_context_in_the_batch_asks_nothing() -> None:
     """The generating row still occupies one logits row and gets no scores."""
     batch_scorer, stub = _scorer()
-    generating = _context("gen")
-    scoring = _context(
+    generating = label_context("gen")
+    scoring = label_context(
         "shared",
         label_token_ids=[1],
         label_positions=[2, 5],
@@ -140,7 +114,7 @@ def test_a_generating_context_in_the_batch_asks_nothing() -> None:
 def test_positions_and_candidate_groups_have_to_agree() -> None:
     """A count mismatch is refused before the gather graph runs."""
     batch_scorer, stub = _scorer()
-    context = _context(
+    context = label_context(
         "broken",
         label_token_ids=[1],
         label_positions=[2, 5],
@@ -154,7 +128,7 @@ def test_positions_and_candidate_groups_have_to_agree() -> None:
 def test_positions_without_candidate_groups_are_refused() -> None:
     """Half a positions request is refused before any launch."""
     batch_scorer, stub = _scorer()
-    context = _context("half", label_positions=[2, 5])
+    context = label_context("half", label_positions=[2, 5])
     with pytest.raises(ValueError, match="no candidate groups"):
         batch_scorer.score(_outputs(), [context])
     assert stub.asked == []
@@ -163,7 +137,7 @@ def test_positions_without_candidate_groups_are_refused() -> None:
 def test_candidate_groups_without_positions_are_refused() -> None:
     """Candidate groups with no positions are refused before any launch."""
     batch_scorer, stub = _scorer()
-    context = _context("no-positions", label_token_id_groups=[[1], [2, 3]])
+    context = label_context("no-positions", label_token_id_groups=[[1], [2, 3]])
     with pytest.raises(ValueError, match="2 candidate groups and no label"):
         batch_scorer.score(_outputs(), [context])
     assert stub.asked == []
@@ -171,7 +145,7 @@ def test_candidate_groups_without_positions_are_refused() -> None:
 
 def test_the_disagreement_names_the_request_and_both_counts() -> None:
     """The message reads as this request's, and states both counts."""
-    context = _context(
+    context = label_context(
         "half-asked",
         label_token_ids=[1],
         label_positions=[2, 5],
@@ -188,7 +162,7 @@ def test_the_disagreement_names_the_request_and_both_counts() -> None:
 def test_named_rows_come_from_the_label_channel() -> None:
     """A step that named positions scores the label channel."""
     batch_scorer, stub = _scorer()
-    context = _context(
+    context = label_context(
         "shared",
         label_token_ids=[1],
         label_positions=[2, 5],
@@ -204,7 +178,7 @@ def test_no_label_channel_falls_back_to_the_next_token_rows() -> None:
     batch_scorer, stub = _scorer()
     results = batch_scorer.score(
         _outputs(next_token_logits="next-token rows", label_logits=None),
-        [_context("a", [7, 9])],
+        [label_context("a", [7, 9])],
     )
     assert results == {"a": [[0.0, 2.0]]}
     assert stub.chosen == "next-token rows"
@@ -215,14 +189,16 @@ def test_variable_logits_are_still_refused() -> None:
     batch_scorer, _ = _scorer()
     with pytest.raises(ValueError, match="does not support variable logits"):
         batch_scorer.score(
-            _outputs(logit_offsets=object()), [_context("a", [7])]
+            _outputs(logit_offsets=object()), [label_context("a", [7])]
         )
 
 
 def test_a_row_read_names_no_candidates() -> None:
     """A request asking for hidden rows scores nothing and reads them itself."""
     batch_scorer, stub = _scorer()
-    context = _context("rows", label_positions=[2, 5, 9], label_hidden=True)
+    context = label_context(
+        "rows", label_positions=[2, 5, 9], label_hidden=True
+    )
     assert _asked_labels(context) == [None, None, None]
     results = batch_scorer.score(_outputs(label_logits="named rows"), [context])
     assert results == {}
@@ -231,7 +207,7 @@ def test_a_row_read_names_no_candidates() -> None:
 
 def test_positions_without_candidates_are_still_refused() -> None:
     """The exemption belongs to row reads, not to scoring requests."""
-    context = _context("a", label_positions=[2, 5])
+    context = label_context("a", label_positions=[2, 5])
     with pytest.raises(ValueError, match="no candidate groups"):
         _asked_labels(context)
 
@@ -245,9 +221,13 @@ def test_hidden_rows_are_sliced_by_the_named_counts() -> None:
     rows = np.arange(12.0, dtype=np.float32).reshape(6, 2)
     buffer = Buffer.from_numpy(np.ascontiguousarray(rows))
     batch = [
-        _context("a", label_positions=[0, 1, 2], label_hidden=True),
-        _context("b"),
-        _context("c", label_positions=[4, 5]),
+        label_context("a", label_positions=[0, 1, 2], label_hidden=True),
+        label_context("b"),
+        label_context(
+            "c",
+            label_positions=[4, 5],
+            label_token_id_groups=[[3], [4, 6]],
+        ),
     ]
     out = batch_scorer.hidden_rows(_outputs(label_hidden=buffer), batch)
     assert len(out) == 1
@@ -261,6 +241,6 @@ def test_a_gather_the_batch_cannot_account_for_raises() -> None:
 
     batch_scorer, _ = _scorer()
     buffer = Buffer.from_numpy(np.zeros([5, 2], dtype=np.float32))
-    batch = [_context("a", label_positions=[0, 1, 2], label_hidden=True)]
+    batch = [label_context("a", label_positions=[0, 1, 2], label_hidden=True)]
     with pytest.raises(RuntimeError, match="disagree on the gather"):
         batch_scorer.hidden_rows(_outputs(label_hidden=buffer), batch)
