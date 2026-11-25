@@ -58,6 +58,7 @@ modular_py_test(
         "//max/python/max/dtype",
         "//max/python/max/engine",
         "//max/python/max/graph",
+        "//max/python/max/nn/legacy",
         "//max/python/max/pipelines/architectures/qwen3_5_modulev3",
         "//max/python/max/pipelines/lib",
         requirement("numpy"),

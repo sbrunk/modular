@@ -22,7 +22,11 @@ modular_py_test(
 modular_py_test(
     name = "test_registration",
     srcs = ["test_registration.py"],
+    # The lookup resolves the architecture by name, and only
+    # register_all_models() hydrates the name table.
+    ignore_extra_deps = ["//max/python/max/pipelines"],
     deps = [
+        "//max/python/max/pipelines",
         "//max/python/max/pipelines/architectures/qwen3_5_decider",
         "//max/python/max/pipelines/lib",
         "//max/python/max/pipelines/modeling",
@@ -34,9 +38,11 @@ modular_py_test(
 # the GPU-side counterpart of the exactness these cases pin.
 modular_py_test(
     name = "test_adapter_fold",
+    size = "large",
     srcs = ["test_adapter_fold.py"],
     deps = [
         "//max/python/max:tensor",
+        "//max/python/max/driver",
         "//max/python/max/dtype",
         "//max/python/max/pipelines/architectures/qwen3_5_decider",
         requirement("numpy"),
@@ -52,7 +58,6 @@ modular_py_test(
     deps = [
         "//max/python/max/driver",
         "//max/python/max/engine",
-        "//max/python/max/graph",
         "//max/python/max/pipelines/architectures/qwen3_5_decider",
         requirement("numpy"),
     ],
