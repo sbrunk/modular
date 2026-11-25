@@ -326,8 +326,8 @@ class ModelOutputs:
     ``[total_label_positions, hidden_size]``.
 
     The same gather :attr:`label_logits` reads, taken one stage before the
-    head: a host that scores a second head over the rows themselves -- a span
-    head, say -- reads these without a second pass. Present only for a build
+    head: a host that scores a second head over the rows themselves, such as a
+    span head, reads these without a second pass. Present only for a build
     that declares the channel beside the ``label_positions`` operand.
 
     They are last among the fields here because the paths that bind captured
@@ -346,8 +346,8 @@ def bind_captured_outputs(buffers: Sequence[Buffer]) -> ModelOutputs:
     A capture returns its outputs as a list and drops the leaf names the graph
     wrote them under, so only the leaf set this path can name from its count is
     bound. A ModuleV3 decode graph in ``ReturnLogits.LAST_TOKEN`` and
-    ``ReturnHiddenStates.NONE`` mode returns one leaf, the next-token rows, and
-    that is what :attr:`ModelOutputs.logits` has always held here. A second leaf
+    ``ReturnHiddenStates.NONE`` mode returns one leaf, the next-token rows;
+    :attr:`ModelOutputs.logits` has always held those rows. A second leaf
     is refused rather than guessed at: it is the hidden states of a
     ``ReturnHiddenStates.LAST`` build or the ``label_logits`` of a decoder that
     declares the ``label_positions`` operand, and the two bind to different

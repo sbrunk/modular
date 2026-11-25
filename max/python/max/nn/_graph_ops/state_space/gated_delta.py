@@ -429,7 +429,7 @@ def gated_delta_recurrence_fwd(
         The recurrence output, ``[total_seq_len, value_dim]``. The kernel walks
         ``range(sequence_start_flat_idx, sequence_end_flat_idx)`` per batch
         item, so rows outside the spans are left unwritten and hold whatever
-        the output buffer held — an empty span leaves the whole output
+        the output buffer held. An empty span leaves the whole output
         untouched. Assemble per-span calls with a select, for the reason
         :func:`gated_delta_conv1d_fwd` states: a masked sum carries an
         unwritten row's contents into every row of the step.

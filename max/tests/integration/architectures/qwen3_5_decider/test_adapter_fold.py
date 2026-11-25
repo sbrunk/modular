@@ -21,7 +21,7 @@ the CPU device, with no checkpoint and no compiled decoder graph; the
 served comparison against the reference is the GPU counterpart.
 
 The ``_read_adapter`` cases feed renamed tensor names through the config's
-detection, which is what decides whether a build folds at all.
+detection. Detection decides whether a build folds at all.
 """
 
 from __future__ import annotations

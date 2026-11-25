@@ -543,7 +543,7 @@ class Qwen3_5TextModel(Module[..., ModuleV3Outputs]):
             label_logits = self.logits(scored)
             if self.label_hidden_declared:
                 # The normed rows, one stage before the head: the released
-                # second heads read ``last_hidden_state``, which is what
+                # second heads read ``last_hidden_state``, the normed stream
                 # :meth:`logits` feeds its head, not the residual stream
                 # ``hidden_states`` returns.
                 label_hidden = self.norm(scored).local_shards[0]
@@ -617,8 +617,8 @@ class Qwen3_5Decoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
     rows in
     :attr:`~max.pipelines.lib.interfaces.pipeline_model.ModuleV3Outputs.label_logits`
     beside the next-token rows. ``input_layout`` names the field either way: an
-    input name whose type the gate withholds is not a graph input, which is how
-    ``token_positions`` is gated here.
+    input name whose type the gate withholds is not a graph input, and
+    ``token_positions`` is gated by that rule.
     """
 
     def __init__(self, config: Qwen3_5Config) -> None:

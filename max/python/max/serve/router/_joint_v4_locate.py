@@ -13,9 +13,9 @@
 
 r"""Locate rows: the joint-v4 prompt that asks for verbatim spans.
 
-A Locate row keeps the protocol v4 context -- system line, ``"State:\\n"``
-and the state, then the separator -- and replaces the option-line chunks
-with one chunk per Locate question, the checkpoint's own prompt line from
+A Locate row keeps the protocol v4 context: system line, ``"State:\\n"``
+and the state, then the separator. It replaces the option-line chunks with
+one chunk per Locate question, the checkpoint's own prompt line from
 ``locate-span/locate_config.json`` ending at the ``<|locate|>`` marker::
 
     [context] <|fim_middle|> [Question:\\nLocate verbatim spans:\\n
@@ -23,15 +23,15 @@ with one chunk per Locate question, the checkpoint's own prompt line from
 
 The row answers through the second readout channel: the span head scores
 the state-token rows (its ``document``) against each marker row (its
-``labels``), so the encoder names both sets of positions -- everything
+``labels``), so the encoder names both sets of positions: everything
 between the row's start and the separator belongs to ``document``. It
 also keeps a character offset for every state-token row, because the
 head answers in token indices and the response answers in text.
 
 Escape rules and the shared-row segment machinery are the decisions
 format's: the chunks hide from each other the same way, and the state
-attends all of them, which is what lets one answer mention a span another
-question named.
+attends all of them, so one answer can mention a span another question
+named.
 """
 
 from __future__ import annotations

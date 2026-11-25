@@ -60,7 +60,7 @@ def test_a_server_that_declared_no_format_generates() -> None:
 
 def test_an_ordinary_chat_model_generates() -> None:
     """The chat format means a checkpoint with no decision protocol: its head
-    is the vocabulary, which is what the route samples."""
+    is the vocabulary the route samples."""
     app = _app(ChatFormat())
     with TestClient(app) as client:
         response = client.post("/v1/chat/completions", json={})
