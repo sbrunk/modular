@@ -592,8 +592,6 @@ def process_ragged_kv_outputs(
             next_token_logits=outputs[0],
             hidden_states=outputs[1],
         )
-    if len(outputs) != 1:
-        _refuse_unnamed_outputs(len(outputs))
     return ModelOutputs(
         logits=outputs[0],
         next_token_logits=outputs[0],

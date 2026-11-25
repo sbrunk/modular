@@ -176,11 +176,6 @@ class SpanWeights:
         """Proposal columns of the head, the length of each score row."""
         return int(self.ts_weight.shape[0])
 
-    @property
-    def scale(self) -> float:
-        """The divisor of the head's score matmuls: the root of its width."""
-        return math.sqrt(self.width)
-
     @classmethod
     def from_mapping(cls, state: Mapping[str, Any]) -> SpanWeights:
         """Reads the head tensors out of a ``head.safetensors`` mapping.
@@ -335,7 +330,7 @@ def build_span_head_graph(
     width: int,
     proposals: int,
     max_span: int,
-    select: bool = True,
+    scale: float | None = None,
     device: DeviceRef | None = None,
     width_buckets: int = 32,
 ) -> Graph:
@@ -344,13 +339,13 @@ def build_span_head_graph(
     Args:
         hidden_size: Row width of ``document`` and ``labels``; the model's
             hidden size, which the head's projections map to ``width``.
-        width: Head width (``head.width``), and the divisor ``sqrt(width)``.
+        width: Head width (``head.width``).
         proposals: Start rows and end rows kept per question, baked in as
             the ``top_k`` ``k`` and as the pad width.
         max_span: Pairs wider than this get a ``-inf`` score.
-        select: Emit the ``[matches]`` candidate vectors from ``nonzero``.
-            With ``False`` the graph stops at the dense
-            ``[q, proposals, proposals]`` probabilities.
+        scale: Divisor of the score matmuls, from
+            :attr:`LocateSettings.scale`. The graph divides by
+            ``sqrt(width)`` when the caller states no divisor.
         device: Where the graph runs; ``DeviceRef.CPU()`` by default.
         width_buckets: Rows of ``width_bias``; the bucket ladder indexes it,
             so a width at or beyond ``2**width_buckets`` lands on the last row.
@@ -410,7 +405,9 @@ def build_span_head_graph(
             end_bias,
         ) = (value.tensor for value in graph.inputs)
 
-        scale = _constant(math.sqrt(width), f32, device)
+        scale_value = _constant(
+            math.sqrt(width) if scale is None else scale, f32, device
+        )
         neg_inf = _constant(float("-inf"), f32, device)
         one_i = _constant(1, DType.int64, device)
 
@@ -425,10 +422,12 @@ def build_span_head_graph(
         thresholds = project(labels, thresholds_weight, thresholds_bias)
 
         start = ops.add(
-            ops.div(ops.matmul(qs, ops.transpose(ts, 0, 1)), scale), start_bias
+            ops.div(ops.matmul(qs, ops.transpose(ts, 0, 1)), scale_value),
+            start_bias,
         )
         end = ops.add(
-            ops.div(ops.matmul(qe, ops.transpose(te, 0, 1)), scale), end_bias
+            ops.div(ops.matmul(qe, ops.transpose(te, 0, 1)), scale_value),
+            end_bias,
         )
 
         start_value, start_index, ts_rows = _padded_top_k(
@@ -452,7 +451,7 @@ def build_span_head_graph(
             start_value[:, :, None],
             ops.add(end_value[:, None, :], bias_rows),
         )
-        scores = ops.add(ops.div(pair, scale), offsets)
+        scores = ops.add(ops.div(pair, scale_value), offsets)
 
         too_wide = ops.greater(widths, _constant(max_span, DType.int64, device))
         too_narrow = ops.logical_not(ops.greater_equal(widths, one_i))
@@ -471,34 +470,31 @@ def build_span_head_graph(
             probabilities,
             ops.reshape(cutoff, [-1]),
         ]
-        if select:
-            # A pad slot is a slot whose logit came out of the -inf columns.
-            # No finite hidden row produces one, so `is_inf` flags it and the
-            # graph needs no value for `n`.
-            real = ops.logical_and(
-                ops.logical_not(ops.is_inf(start_value))[:, None, :],
-                ops.logical_not(ops.is_inf(end_value))[:, None, :],
-            )
-            chosen = ops.logical_and(
-                real,
-                ops.greater_equal(
-                    probabilities, ops.reshape(threshold, [1, 1, 1])
-                ),
-            )
-            multi = ops.nonzero(chosen, out_dim="matches")
-            question = ops.slice_tensor(multi, [..., 0])
-            row_slot = ops.slice_tensor(multi, [..., 1])
-            col_slot = ops.slice_tensor(multi, [..., 2])
-            outputs += [
-                question,
-                ops.gather_nd(
-                    start_index, ops.stack([question, row_slot], axis=1)
-                ),
-                ops.gather_nd(
-                    end_index, ops.stack([question, col_slot], axis=1)
-                ),
-                ops.gather_nd(probabilities, multi),
-            ]
+        # A pad slot is a slot whose logit came out of the -inf columns.
+        # No finite hidden row produces one, so `is_inf` flags it and the
+        # graph needs no value for `n`.
+        real = ops.logical_and(
+            ops.logical_not(ops.is_inf(start_value))[:, None, :],
+            ops.logical_not(ops.is_inf(end_value))[:, None, :],
+        )
+        chosen = ops.logical_and(
+            real,
+            ops.greater_equal(
+                probabilities, ops.reshape(threshold, [1, 1, 1])
+            ),
+        )
+        multi = ops.nonzero(chosen, out_dim="matches")
+        question = ops.slice_tensor(multi, [..., 0])
+        row_slot = ops.slice_tensor(multi, [..., 1])
+        col_slot = ops.slice_tensor(multi, [..., 2])
+        outputs += [
+            question,
+            ops.gather_nd(
+                start_index, ops.stack([question, row_slot], axis=1)
+            ),
+            ops.gather_nd(end_index, ops.stack([question, col_slot], axis=1)),
+            ops.gather_nd(probabilities, multi),
+        ]
         # A graph takes exactly one `graph.output` call: a second call puts an
         # `mo.output` op in the middle of the block and verification fails.
         graph.output(*outputs)
@@ -514,8 +510,8 @@ def run_span_head(
 ) -> dict[str, np.ndarray]:
     """Executes the graph on host arrays and returns numpy outputs by name.
 
-    ``model`` must have loaded a graph from :func:`build_span_head_graph`
-    with ``select=True``. The head tensors are re-fed on each call; they are
+    ``model`` must have loaded a graph from :func:`build_span_head_graph`.
+    The head tensors are re-fed on each call; they are
     6.6 MB, and this stays a per-request cost by design while one process
     owns one head.
     """
