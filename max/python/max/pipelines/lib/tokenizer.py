@@ -227,6 +227,30 @@ class ReasoningDelimitersMixin:
         return self._reasoning_end_token_id
 
 
+class OffsetEncodingMixin:
+    """Encodes a prompt together with the character span of every id.
+
+    A caller that maps a token position back to text needs the offsets of
+    the ids the model actually saw, and :func:`_encode_with_offsets` answers
+    both in one call. A class mixing this in sets ``delegate`` to its
+    HuggingFace tokenizer.
+    """
+
+    delegate: Any
+
+    async def encode_with_offsets(
+        self, prompt: str, add_special_tokens: bool = True
+    ) -> tuple[list[int], list[tuple[int, int]]]:
+        """Transforms the provided prompt into ids and character spans.
+
+        The tokenizer runs off the event loop: the underlying HuggingFace
+        tokenizer may not be thread safe.
+        """
+        return await run_with_default_executor(
+            _encode_with_offsets, self.delegate, prompt, add_special_tokens
+        )
+
+
 logger = logging.getLogger("max.pipelines")
 
 
@@ -601,8 +625,8 @@ def _encode_with_offsets(
 
     Offset mapping is part of the encode itself, never a second
     tokenization: an answer given in token indices is only meaningful
-    against the offsets of the ids the model actually saw. Both text
-    tokenizers share this, since each holds a HuggingFace delegate.
+    against the offsets of the ids the model actually saw. Each caller
+    passes the HuggingFace delegate it holds.
     """
     encoded = delegate(
         replace_unpaired_surrogates(text),
@@ -616,9 +640,10 @@ def _encode_with_offsets(
 
 
 class TextTokenizer(
+    OffsetEncodingMixin,
     PipelineTokenizer[
         TextContext, npt.NDArray[np.integer[Any]], TextGenerationRequest
-    ]
+    ],
 ):
     """Encapsulates creation of :class:`TextContext` and specific token encode/decode logic.
 
@@ -796,16 +821,6 @@ class TextTokenizer(
             raise PromptTooLongError(len(encoded_prompt), self.max_length)
 
         return encoded_prompt
-
-    async def encode_with_offsets(
-        self, prompt: str, add_special_tokens: bool = True
-    ) -> tuple[list[int], list[tuple[int, int]]]:
-        """Transforms the provided prompt into ids and character spans."""
-        # Same lock note as ``_encode_text``: the underlying tokenizer may
-        # not be thread safe.
-        return await run_with_default_executor(
-            _encode_with_offsets, self.delegate, prompt, add_special_tokens
-        )
 
     async def _encode_text(
         self, text: str, add_special_tokens: bool
@@ -1082,6 +1097,7 @@ class ReasoningTextTokenizer(ReasoningDelimitersMixin, TextTokenizer):
 
 
 class TextAndVisionTokenizer(
+    OffsetEncodingMixin,
     PipelineTokenizer[
         TextAndVisionContext,
         npt.NDArray[np.integer[Any]],
@@ -1241,16 +1257,6 @@ class TextAndVisionTokenizer(
             encoded_prompt = checked_token_ids(prompt, self._token_id_bound)
 
         return encoded_prompt
-
-    async def encode_with_offsets(
-        self, prompt: str, add_special_tokens: bool = True
-    ) -> tuple[list[int], list[tuple[int, int]]]:
-        """Transforms the provided prompt into ids and character spans."""
-        # Same lock note as ``encode``: the underlying tokenizer may not be
-        # thread safe.
-        return await run_with_default_executor(
-            _encode_with_offsets, self.delegate, prompt, add_special_tokens
-        )
 
     async def decode(self, encoded: TokenIds, **kwargs) -> str:
         """Transforms a provided encoded token array back into readable text."""
