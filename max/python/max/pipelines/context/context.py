@@ -560,6 +560,18 @@ class TextContext:
     :meth:`BatchLabelScorer.score` raises when the two counts disagree.
     """
 
+    label_hidden: bool = field(default=False)
+    """Whether this request asks for the hidden rows it named.
+
+    Set alongside :attr:`label_positions` by a request that scores nothing
+    and reads the gathered rows themselves: the model returns those rows on
+    :attr:`ModelOutputs.label_hidden`, and a pipeline whose architecture
+    declares that channel answers them on
+    :attr:`TextGenerationOutput.label_hidden_rows`, in the order the request
+    named the positions. A scoring request that wants only log-probabilities
+    leaves this unset and pays no row copy.
+    """
+
     dkv_cache_hint: bytes | None = field(default=None)
     """The Orchestrator's ``dkv_cache_hint`` for this request, as JSON bytes.
 

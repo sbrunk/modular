@@ -23,7 +23,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from max.driver import Device
+import numpy as np
+import numpy.typing as npt
+from max.driver import CPU, Buffer, Device
 from max.dtype import DType
 from max.engine import InferenceSession
 from max.pipelines.context import TextContext, TextGenerationContextType
@@ -32,6 +34,19 @@ from max.pipelines.sampling import LabelScorer
 
 from ..interfaces import ModelOutputs
 from ..utils import CompilationTimer
+
+
+def _rows_to_host(buffer: Buffer) -> npt.NDArray[np.float32]:
+    """The step's gathered rows as float32 on the host.
+
+    The channel leaves the graph in the model's dtype; bfloat16 has no
+    numpy counterpart, so those rows widen through their bits.
+    """
+    host = buffer.to(CPU())
+    if host.dtype == DType.bfloat16:
+        bits = np.from_dlpack(host.view(DType.uint16))
+        return (bits.astype(np.uint32) << 16).view(np.float32)
+    return host.to_numpy().astype(np.float32)
 
 
 def _asked_labels(
@@ -69,6 +84,12 @@ def _asked_labels(
             "groups and no label positions: a positions request names both"
         )
     if groups is None:
+        if context.label_hidden:
+            # The rows are reads, not scoring sites: the request wants the
+            # hidden state of every position it named and scores no
+            # candidates. The step still gathers those rows, and they come
+            # back on ``label_hidden_rows``.
+            return [None] * len(positions)
         raise ValueError(
             f"request {context.request_id} names {len(positions)} label "
             "positions and no candidate groups: every scored row needs its "
@@ -178,6 +199,71 @@ class BatchLabelScorer:
             if rows:
                 results[context.request_id] = rows
         return results
+
+    def hidden_rows(
+        self,
+        model_outputs: ModelOutputs,
+        flat_batch: Sequence[TextGenerationContextType],
+    ) -> dict[RequestID, npt.NDArray[np.float32]]:
+        """Returns the hidden rows the step gathered, per asking request.
+
+        The same rows :meth:`score` reads candidates in, one stage before
+        the head: a context that set :attr:`TextContext.label_hidden` reads
+        them itself instead of naming candidates. Rows land in gather order
+        -- the order :meth:`BatchProcessor.label_positions` names them, one
+        entry per position the context named and one next-token row for
+        every other context -- and each asking request gets its own slice.
+
+        Args:
+            model_outputs: Outputs of this step's forward pass. A model
+                without the ``label_hidden`` channel returns ``None`` there,
+                and this answers nothing.
+            flat_batch: The flattened context batch.
+
+        Returns:
+            Float32 host rows keyed by request id, only for asking
+            contexts. Empty when the batch asks none or the model returns
+            no channel.
+
+        Raises:
+            RuntimeError: If the gathered rows and the batch's named counts
+                disagree, which means the model and the batch processor
+                counted the step differently.
+        """
+        buffer = model_outputs.label_hidden
+        if buffer is None:
+            return {}
+        asking = [
+            context.request_id
+            for context in flat_batch
+            if isinstance(context, TextContext) and context.label_hidden
+        ]
+        if not asking:
+            return {}
+        rows = _rows_to_host(buffer)
+        out: dict[RequestID, npt.NDArray[np.float32]] = {}
+        cursor = 0
+        for context in flat_batch:
+            if not isinstance(context, TextContext):
+                continue
+            if (
+                context.label_positions is not None
+                and not context.tokens.actively_chunked
+                and context.tokens.generated_length == 0
+            ):
+                count = len(context.label_positions)
+            else:
+                count = 1
+            if context.label_hidden:
+                out[context.request_id] = rows[cursor : cursor + count]
+            cursor += count
+        if cursor != rows.shape[0]:
+            raise RuntimeError(
+                f"the step gathered {rows.shape[0]} hidden rows and the"
+                f" batch names {cursor}: the model and the batch processor"
+                " disagree on the gather"
+            )
+        return out
 
     def _label_scorer(self) -> LabelScorer:
         if self._scorer is None:

@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+import numpy.typing as npt
+
 
 @dataclass(frozen=True)
 class LabelScoringOutput:
@@ -37,3 +40,7 @@ class LabelScoringOutput:
     the caller named its positions, each with that position's own candidates.
     ``None`` when one row was scored, whose scores are in
     :attr:`label_log_probabilities`."""
+    label_hidden_rows: npt.NDArray[np.float32] | None = None
+    """The hidden rows of the positions the request named, float32, in the
+    order it named them. Set only when the request asked for the rows
+    themselves instead of candidates; the score fields are then empty."""

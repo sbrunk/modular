@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import chain
 
+import numpy as np
+import numpy.typing as npt
 from max.pipelines.request import RequestID
 from max.pipelines.request.open_responses import OutputContent, Usage
 from pydantic import BaseModel, ConfigDict
@@ -64,6 +66,15 @@ class TextGenerationOutput:
     label_log_probability_rows: list[list[float]] | None = None
     """Label log-probabilities of every row the request asked scored, in the
     order it named its positions. Only set for label-scoring requests."""
+
+    label_hidden_rows: npt.NDArray[np.float32] | None = None
+    """The hidden rows a scoring step named, as the model returned them.
+
+    Only set when the request set :attr:`TextContext.label_hidden` and the
+    architecture declares the ``label_hidden`` channel: one row per named
+    position, in the order the request named them, float32 on the host. A
+    caller reads a second head over these rows without re-running the step
+    or naming candidates."""
 
     @property
     def is_done(self) -> bool:
@@ -117,6 +128,14 @@ class TextGenerationOutput:
                     output.label_log_probability_rows
                     for output in outputs
                     if output.label_log_probability_rows is not None
+                ),
+                None,
+            ),
+            label_hidden_rows=next(
+                (
+                    output.label_hidden_rows
+                    for output in outputs
+                    if output.label_hidden_rows is not None
                 ),
                 None,
             ),

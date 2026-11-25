@@ -721,6 +721,9 @@ class TextGenerationPipeline(
         label_log_probabilities = self._label_scorer.score(
             model_outputs, flat_batch
         )
+        label_hidden_rows = self._label_scorer.hidden_rows(
+            model_outputs, flat_batch
+        )
 
         if model_outputs.next_tokens is not None:
             if bitmask is not None:
@@ -773,6 +776,9 @@ class TextGenerationPipeline(
                 output.label_log_probability_rows = rows
                 if len(rows) == 1:
                     output.label_log_probabilities = rows[0]
+        for request_id, hidden in label_hidden_rows.items():
+            if request_id in res:
+                res[request_id].label_hidden_rows = hidden
 
         # Update the cache lengths in our kv_cache manager.
         # This should be done after the contexts are updated.

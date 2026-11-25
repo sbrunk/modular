@@ -47,6 +47,7 @@ class _Outputs:
 
     next_token_logits: Any = "next-token rows"
     label_logits: Any = None
+    label_hidden: Any = None
     logit_offsets: Any = None
 
 
@@ -86,6 +87,7 @@ def _context(
     label_token_ids: list[int] | None = None,
     label_positions: list[int] | None = None,
     label_token_id_groups: list[list[int]] | None = None,
+    label_hidden: bool = False,
 ) -> TextContext:
     """A scoring context built without a tokenizer or a token buffer."""
     context = TextContext.__new__(TextContext)
@@ -94,6 +96,7 @@ def _context(
     context.label_token_ids = label_token_ids
     context.label_positions = label_positions
     context.label_token_id_groups = label_token_id_groups
+    context.label_hidden = label_hidden
     return context
 
 
@@ -214,3 +217,50 @@ def test_variable_logits_are_still_refused() -> None:
         batch_scorer.score(
             _outputs(logit_offsets=object()), [_context("a", [7])]
         )
+
+
+def test_a_row_read_names_no_candidates() -> None:
+    """A request asking for hidden rows scores nothing and reads them itself."""
+    batch_scorer, stub = _scorer()
+    context = _context("rows", label_positions=[2, 5, 9], label_hidden=True)
+    assert _asked_labels(context) == [None, None, None]
+    results = batch_scorer.score(_outputs(label_logits="named rows"), [context])
+    assert results == {}
+    assert stub.asked == []
+
+
+def test_positions_without_candidates_are_still_refused() -> None:
+    """The exemption belongs to row reads, not to scoring requests."""
+    context = _context("a", label_positions=[2, 5])
+    with pytest.raises(ValueError, match="no candidate groups"):
+        _asked_labels(context)
+
+
+def test_hidden_rows_are_sliced_by_the_named_counts() -> None:
+    """One gather block, split back per request in gather order."""
+    import numpy as np
+    from max.driver import Buffer
+
+    batch_scorer, _ = _scorer()
+    rows = np.arange(12.0, dtype=np.float32).reshape(6, 2)
+    buffer = Buffer.from_numpy(np.ascontiguousarray(rows))
+    batch = [
+        _context("a", label_positions=[0, 1, 2], label_hidden=True),
+        _context("b"),
+        _context("c", label_positions=[4, 5]),
+    ]
+    out = batch_scorer.hidden_rows(_outputs(label_hidden=buffer), batch)
+    assert len(out) == 1
+    np.testing.assert_array_equal(list(out.values())[0], rows[:3])
+
+
+def test_a_gather_the_batch_cannot_account_for_raises() -> None:
+    """The model and the batch processor must count the same rows."""
+    import numpy as np
+    from max.driver import Buffer
+
+    batch_scorer, _ = _scorer()
+    buffer = Buffer.from_numpy(np.zeros([5, 2], dtype=np.float32))
+    batch = [_context("a", label_positions=[0, 1, 2], label_hidden=True)]
+    with pytest.raises(RuntimeError, match="disagree on the gather"):
+        batch_scorer.hidden_rows(_outputs(label_hidden=buffer), batch)

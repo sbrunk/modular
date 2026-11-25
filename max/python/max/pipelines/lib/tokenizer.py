@@ -594,6 +594,27 @@ async def build_eos_tracker_for_request(
     )
 
 
+def _encode_with_offsets(
+    delegate: Any, text: str, add_special_tokens: bool
+) -> tuple[list[int], list[tuple[int, int]]]:
+    """One encode call answering ids and the character span of each id.
+
+    Offset mapping is part of the encode itself, never a second
+    tokenization: an answer given in token indices is only meaningful
+    against the offsets of the ids the model actually saw. Both text
+    tokenizers share this, since each holds a HuggingFace delegate.
+    """
+    encoded = delegate(
+        replace_unpaired_surrogates(text),
+        add_special_tokens=add_special_tokens,
+        return_offsets_mapping=True,
+    )
+    return (
+        [int(token) for token in encoded["input_ids"]],
+        [(int(a), int(b)) for a, b in encoded["offset_mapping"]],
+    )
+
+
 class TextTokenizer(
     PipelineTokenizer[
         TextContext, npt.NDArray[np.integer[Any]], TextGenerationRequest
@@ -775,6 +796,16 @@ class TextTokenizer(
             raise PromptTooLongError(len(encoded_prompt), self.max_length)
 
         return encoded_prompt
+
+    async def encode_with_offsets(
+        self, prompt: str, add_special_tokens: bool = True
+    ) -> tuple[list[int], list[tuple[int, int]]]:
+        """Transforms the provided prompt into ids and character spans."""
+        # Same lock note as ``_encode_text``: the underlying tokenizer may
+        # not be thread safe.
+        return await run_with_default_executor(
+            _encode_with_offsets, self.delegate, prompt, add_special_tokens
+        )
 
     async def _encode_text(
         self, text: str, add_special_tokens: bool
@@ -1210,6 +1241,16 @@ class TextAndVisionTokenizer(
             encoded_prompt = checked_token_ids(prompt, self._token_id_bound)
 
         return encoded_prompt
+
+    async def encode_with_offsets(
+        self, prompt: str, add_special_tokens: bool = True
+    ) -> tuple[list[int], list[tuple[int, int]]]:
+        """Transforms the provided prompt into ids and character spans."""
+        # Same lock note as ``encode``: the underlying tokenizer may not be
+        # thread safe.
+        return await run_with_default_executor(
+            _encode_with_offsets, self.delegate, prompt, add_special_tokens
+        )
 
     async def decode(self, encoded: TokenIds, **kwargs) -> str:
         """Transforms a provided encoded token array back into readable text."""
