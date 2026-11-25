@@ -572,6 +572,15 @@ class TextContext:
     leaves this unset and pays no row copy.
     """
 
+    label_spans: list[int] | None = field(default=None)
+    """Row-local token counts of the spans a request states for its own row.
+
+    The counts are the state block plus the separator that closes it, then
+    one count per question chunk including that chunk's marker. The batch
+    processor cuts the row into segments from them; it falls back to
+    counting marker tokens when this field is ``None``.
+    """
+
     dkv_cache_hint: bytes | None = field(default=None)
     """The Orchestrator's ``dkv_cache_hint`` for this request, as JSON bytes.
 

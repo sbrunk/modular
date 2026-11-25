@@ -173,6 +173,7 @@ class LiveLocateEngine:
             instructions,
             self._separator_id,
         )
+        named = row.label_positions()
         scored = await pipeline.score(
             TextGenerationRequest(
                 request_id=RequestID(f"{request.state.request_id}_0"),
@@ -183,7 +184,7 @@ class LiveLocateEngine:
                 request_path="/v1/locate",
             ),
             None,
-            row.label_positions(),
+            named,
             label_hidden=True,
             configure_context=lambda context: attach_segment_bounds(
                 context, row.segments
@@ -195,11 +196,10 @@ class LiveLocateEngine:
                 "the model returned no label_hidden channel; answering "
                 "locate needs an architecture that declares it"
             )
-        named = len(row.label_positions())
-        if hidden.shape[0] != named:
+        if hidden.shape[0] != len(named):
             raise LocateRowsUnavailable(
                 f"the step returned {hidden.shape[0]} hidden rows for the "
-                f"{named} positions the row named"
+                f"{len(named)} positions {named} the row named"
             )
         head = await asyncio.to_thread(
             self._run_head,
@@ -265,6 +265,7 @@ class LiveLocateEngine:
             build_span_head_graph(
                 hidden_size=hidden_size,
                 width=self.settings.width,
+                scale=self.settings.scale,
                 proposals=self.settings.proposals,
                 max_span=self.settings.max_span,
                 device=DeviceRef.CPU(),

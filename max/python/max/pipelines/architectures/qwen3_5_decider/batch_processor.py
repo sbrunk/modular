@@ -35,18 +35,18 @@ them, and :func:`~.layers.attention.marker_segments` is the fallback that counts
 the marker token when the step has no edges. The attention mask and the
 per-segment output assembly read whichever of the two ran.
 
-Two rules can say where the spans are. A request that knows them states them as
-:class:`SegmentBounds`: the token count of the state block and of each question
-chunk, which ``format/pplx_v13_locate.py`` (``LocatePlan.segments``) and
-``format/pplx_v13_format.py`` (``StateOncePlan.segment_ids``, ``marker_rows``)
-already produce while they build the sequence. With no such statement on the
-context, the edges are counted off the step's tokens, which matches the labels
-:func:`~.layers.attention.marker_segments` derives token for token.
-:meth:`Qwen3_5DeciderBatchProcessor.token_positions` prints which rule ran.
+Two rules can say where the spans are. A request that knows them states them
+on its context's ``label_spans`` field: the token count of the state block and
+of each question chunk, which :class:`SegmentBounds` reads back. With no such
+statement, the edges are counted off the step's tokens, which matches the
+labels :func:`~.layers.attention.marker_segments` derives token for token.
+:meth:`Qwen3_5DeciderBatchProcessor.token_positions` logs which rule ran at
+``debug``.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -74,6 +74,8 @@ __all__ = [
     "segment_labels",
 ]
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class SegmentBounds:
@@ -81,11 +83,8 @@ class SegmentBounds:
 
     ``spans`` is the token count of each span in row order: the state block with
     the ``<|fim_middle|>`` separator that closes it, then one count per question
-    chunk with that chunk's marker included. ``format/pplx_v13_locate.py``
-    returns this tuple as ``LocatePlan.segments``, and
-    ``format/pplx_v13_format.py`` names the same cuts in
-    ``StateOncePlan.segment_ids`` and ``marker_rows``. Counts are row-local, so
-    no token in the sequence has to mark a span end for the span to be found.
+    chunk with that chunk's marker included. Counts are row-local, so no token
+    in the sequence has to mark a span end for the span to be found.
     """
 
     spans: tuple[int, ...]
@@ -138,19 +137,24 @@ class SegmentBounds:
 def attach_segment_bounds(context: Any, spans: Sequence[int]) -> SegmentBounds:
     """Puts the request's span counts on the context MAX built for it.
 
-    MAX's ``TextContext`` has no field for this port's layout and the fork is not
-    edited, so the counts ride as an attribute of the context object the batch
-    processor receives. A context with no attribute is a step that falls back to
-    counting the marker token.
+    The counts land on :attr:`TextContext.label_spans`, the field that
+    carries them across the host-to-worker boundary with the rest of the
+    context.
     """
     bounds = SegmentBounds(tuple(int(span) for span in spans))
-    context.segment_bounds = bounds
+    context.label_spans = list(bounds.spans)
     return bounds
 
 
 def segment_bounds(context: Any) -> SegmentBounds | None:
-    """Returns the span counts a request attached to its context, or ``None``."""
-    return getattr(context, "segment_bounds", None)
+    """Returns the span counts a request named on its context, or ``None``.
+
+    A context that names none is a step that falls back to counting the
+    marker token. Test fakes build contexts with ``__new__``, so the field is
+    read with :func:`getattr`.
+    """
+    spans = getattr(context, "label_spans", None)
+    return None if spans is None else SegmentBounds(tuple(spans))
 
 
 def segment_labels(
@@ -227,10 +231,12 @@ class Qwen3_5DeciderBatchProcessor(Qwen3_5BatchProcessor):
                 ],
                 RESTART_BLOCKS,
             )
-            print(
-                f"segment edges: counted any of tokens {CHUNK_MARKER_IDS}"
-                f" over {len(tokens)} tokens -> {edges}",
-                flush=True,
+            logger.debug(
+                "segment edges: counted any of tokens %s over %d tokens"
+                " -> %s",
+                CHUNK_MARKER_IDS,
+                len(tokens),
+                edges,
             )
         else:
             if bounds.total != len(tokens):
@@ -240,10 +246,11 @@ class Qwen3_5DeciderBatchProcessor(Qwen3_5BatchProcessor):
                     f" {len(tokens)}; a span table has to cover the row it cuts"
                 )
             edges = bounds.edges(RESTART_BLOCKS)
-            print(
-                f"segment edges: the request's spans {bounds.spans} over"
-                f" {len(tokens)} tokens -> {edges}",
-                flush=True,
+            logger.debug(
+                "segment edges: the request's spans %s over %d tokens -> %s",
+                bounds.spans,
+                len(tokens),
+                edges,
             )
         return np.array(edges, dtype=dtype)
 
@@ -255,8 +262,8 @@ class Qwen3_5DeciderBatchProcessor(Qwen3_5BatchProcessor):
         """Returns the rows a label-scoring step gathers, and logs the positions.
 
         A decisions request that shares one row names its markers on
-        :attr:`~max.pipelines.context.TextContext.label_positions`, and the
-        line below ties those positions to the rows the graph gathered. A step
+        :attr:`~max.pipelines.context.TextContext.label_positions`. The graph
+        ties those positions to the rows it gathered. A step
         whose contexts name nothing prints nothing and gathers each context's
         next-token row.
         """
@@ -267,9 +274,11 @@ class Qwen3_5DeciderBatchProcessor(Qwen3_5BatchProcessor):
             if ctx.label_positions is not None
         ]
         if named:
-            print(
-                f"label rows: prompt positions {named[0]} -> gathered rows "
-                f"{rows.tolist()} over {int(input_row_offsets[-1])} tokens",
-                flush=True,
+            logger.debug(
+                "label rows: prompt positions %s -> gathered rows %s over"
+                " %d tokens",
+                named[0],
+                rows.tolist(),
+                int(input_row_offsets[-1]),
             )
         return rows
