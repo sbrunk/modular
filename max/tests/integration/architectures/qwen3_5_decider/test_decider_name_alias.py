@@ -24,6 +24,7 @@ checkpoint's files, not by whichever architecture was registered first.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 from max.pipelines.architectures.qwen3_5_decider.detection import (
@@ -45,7 +46,7 @@ def _models(architecture: str, model_path: str) -> dict[str, Any]:
     return {"main": cast(Any, _DeclaredModel(architecture, model_path))}
 
 
-def test_marker_file_names_the_decider(tmp_path) -> None:
+def test_marker_file_names_the_decider(tmp_path: Path) -> None:
     """A checkpoint directory holding the decision table is a decider."""
     (tmp_path / DECISION_CONFIG_FILE).write_text("{}")
     assert accepts_decider_checkpoint(tmp_path)
@@ -53,7 +54,7 @@ def test_marker_file_names_the_decider(tmp_path) -> None:
     assert resolved == "Qwen3_5DeciderModel"
 
 
-def test_bare_name_without_the_marker_stands(tmp_path) -> None:
+def test_bare_name_without_the_marker_stands(tmp_path: Path) -> None:
     """The same declared name over a plain checkpoint directory is untouched.
 
     This is the capture the alias exists to avoid: rerouting by name alone
@@ -65,7 +66,7 @@ def test_bare_name_without_the_marker_stands(tmp_path) -> None:
     assert resolved == "Qwen3_5Model"
 
 
-def test_alias_does_not_touch_other_names(tmp_path) -> None:
+def test_alias_does_not_touch_other_names(tmp_path: Path) -> None:
     """A marker file cannot re-title a named-head checkpoint."""
     (tmp_path / DECISION_CONFIG_FILE).write_text("{}")
     resolved = architecture_name_for(

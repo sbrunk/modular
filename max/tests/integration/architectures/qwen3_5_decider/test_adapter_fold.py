@@ -150,7 +150,7 @@ def test_declare_lora_sizes_the_pair_from_the_base_weight() -> None:
     class _Vector:
         weight = Tensor.zeros([16], dtype=DType.float32)
 
-    with pytest.raises(ValueError, match="no .* weight"):
+    with pytest.raises(ValueError, match=r"no .* weight"):
         declare_lora(_Vector(), rank=RANK)
 
 
@@ -236,5 +236,5 @@ def test_detection_reads_rank_and_absence_from_tensor_names() -> None:
             "layers.0.mlp.up_proj.lora_b": (16, RANK),
         }
     )
-    with pytest.raises(ValueError, match="embed_tokens.locate"):
+    with pytest.raises(ValueError, match=r"embed_tokens.locate"):
         _read_adapter(no_marker_row)

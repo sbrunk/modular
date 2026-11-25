@@ -32,7 +32,11 @@ from max.serve.router._decisions_scoring import DecisionRequestError
 from max.serve.router._joint_v4_format import (
     JointV4Format,
 )
-from max.serve.router._joint_v4_locate import assemble_spans, encode_locate
+from max.serve.router._joint_v4_locate import (
+    EncodedLocate,
+    assemble_spans,
+    encode_locate,
+)
 from tests.serve.joint_v4_fakes import (
     V4Tokenizer,
     _settings,
@@ -61,7 +65,7 @@ def _encode(
     instructions: list[str] | None = None,
     settings: LocateSettings = locate_settings,
     state: str = STATE,
-):
+) -> EncodedLocate:
     if tokenizer is None:
         tokenizer = V4Tokenizer()
     fmt = JointV4Format(_settings())

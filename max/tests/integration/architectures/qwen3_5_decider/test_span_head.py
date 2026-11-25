@@ -180,7 +180,7 @@ def test_the_graph_answers_where_the_numpy_head_answers() -> None:
 
 def test_no_selected_pair_exceeds_max_span_or_reaches_a_pad_slot() -> None:
     run, _ = _run(seed=23)
-    for question, start, end in zip(
+    for _question, start, end in zip(
         run["sel_question"], run["sel_start"], run["sel_end"], strict=True
     ):
         assert int(start) < DOCUMENT_ROWS and int(end) < DOCUMENT_ROWS
@@ -190,7 +190,7 @@ def test_no_selected_pair_exceeds_max_span_or_reaches_a_pad_slot() -> None:
 
 def test_the_learned_cutoff_is_the_third_threshold_column() -> None:
     run, weights = _run(seed=31)
-    document, labels = _case(32)
+    _document, labels = _case(32)
     expected = labels @ weights.thresholds_weight.T + weights.thresholds_bias
     np.testing.assert_allclose(
         run["cutoff"], expected[:, 2], rtol=1e-5, atol=1e-6

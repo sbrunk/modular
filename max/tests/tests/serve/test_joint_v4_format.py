@@ -249,7 +249,9 @@ async def test_a_question_wider_than_the_readout_is_refused() -> None:
 @pytest.mark.asyncio
 async def test_a_code_that_is_not_its_token_refuses_the_server() -> None:
     format_ = JointV4Format(_settings())
-    tokenizer = V4Tokenizer(code_ids={**dict(zip(CODES, CODE_IDS)), "c2": 999})
+    tokenizer = V4Tokenizer(
+        code_ids={**dict(zip(CODES, CODE_IDS, strict=True)), "c2": 999}
+    )
     with pytest.raises(DecisionRequestError, match="answer code 'c2'"):
         await format_.encode(
             tokenizer,

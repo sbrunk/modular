@@ -122,7 +122,7 @@ class V4Tokenizer:
         self.vocab = {
             MARKER: marker_id,
             SEPARATOR: SEPARATOR_TOKEN_ID,
-            **(code_ids or dict(zip(CODES, CODE_IDS))),
+            **(code_ids or dict(zip(CODES, CODE_IDS, strict=True))),
         }
 
     expects_content_wrapping = False
