@@ -11,7 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""The joint protocol v4 prompt format for decisions.
+r"""The joint protocol v4 prompt format for decisions.
 
 A checkpoint that ships ``joint_config.json`` declaring template
 ``joint-chunked-readout-v1`` was trained on one sequence per question::
@@ -146,6 +146,12 @@ YES_NO_NAMES = ("yes", "no")
 
 MAX_CODE_ROWS = 255
 """Rows in the readout head, so the most options one question can offer."""
+
+_FULLWIDTH_LESS = "\uff1c"
+_FULLWIDTH_GREATER = "\uff1e"
+"""The defused angle brackets, U+FF1C and U+FF1E, spelled as escapes so this
+file stays ASCII: a token rewritten with them still reads as itself to a
+human, and tokenizes to something that is not it."""
 
 ISOLATED_CHUNKS = RESTART_BLOCKS
 """Question chunks one compiled graph isolates inside a shared row.
@@ -385,7 +391,9 @@ class V4Renderer:
         """
         text = render_value(value)
         for token in self.escapes:
-            full_width = token.replace("<", "＜").replace(">", "＞")
+            full_width = token.replace("<", _FULLWIDTH_LESS).replace(
+                ">", _FULLWIDTH_GREATER
+            )
             text = text.replace(token, full_width)
         return text
 
@@ -687,8 +695,12 @@ class JointV4Format:
         prompt_ids = context_ids + [separator_id]
         placements: list[tuple[list[int], int]] = []
         max_length = tokenizer.max_length
+        # Which question the step that failed was on: every check below names
+        # it, so a caller with several questions knows which one to shorten.
+        blamed: str | None = None
         try:
             for question_id, view in items:
+                blamed = question_id
                 self._check_options(view)
                 question_text, label_ids = renderer.question_chunk(view)
                 chunk_ids = await encode(question_text)
@@ -702,7 +714,7 @@ class JointV4Format:
                 prompt_ids.extend(chunk_ids)
                 placements.append((label_ids, len(prompt_ids) - 1))
         except (ValueError, InputError) as e:
-            raise DecisionRequestError(f"question {question_id!r}: {e}") from e
+            raise DecisionRequestError(f"question {blamed!r}: {e}") from e
         return [
             EncodedQuestion(
                 question_id,

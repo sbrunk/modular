@@ -11,7 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""Locate rows: the joint-v4 prompt that asks for verbatim spans.
+r"""Locate rows: the joint-v4 prompt that asks for verbatim spans.
 
 A Locate row keeps the protocol v4 context -- system line, ``"State:\\n"``
 and the state, then the separator -- and replaces the option-line chunks
@@ -94,8 +94,9 @@ class EncodedLocate:
     the layout's own rules allow, exactly as the decisions shared row."""
 
     def label_positions(self) -> list[int]:
-        """The rows the ``label_hidden`` channel gathers, in head order:
-        the ``document`` rows first, then the ``labels`` rows. A route
+        """The rows the ``label_hidden`` channel gathers, in head order.
+
+        The ``document`` rows first, then the ``labels`` rows. A route
         splits the returned block at :data:`state_count`.
         """
         return self.state_positions + self.marker_positions
@@ -124,6 +125,9 @@ async def encode_locate(
             is text, and text needs offsets.
         state: The state the questions point into.
         instructions: Each question's instruction text, in order.
+        separator_id: The context separator the renderer put between the
+            state and the question chunks, from the pinned check in
+            :meth:`JointV4Format.separator_id`.
 
     Raises:
         DecisionRequestError: If the tokenizer cannot give offsets or the

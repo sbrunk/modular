@@ -11,8 +11,7 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-"""The request flow shared by ``/v1/decisions``, ``/v1/systemone`` and
-``/v1/locate``.
+"""The request flow shared by the decisions, systemone and locate routes.
 
 Each route parses its own schema, then renders questions, scores them, and
 shapes the answers. :mod:`_decisions_flow` owns the steps in the middle and the
