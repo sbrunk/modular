@@ -59,7 +59,11 @@ from max.pipelines.architectures.qwen3_5_modulev3.batch_processor import (
 )
 from max.pipelines.context import TextContext
 
-from .layers.attention import MARKER_TOKEN_ID, SEPARATOR_TOKEN_ID
+from .layers.attention import (
+    CHUNK_MARKER_IDS,
+    MARKER_TOKEN_ID,
+    SEPARATOR_TOKEN_ID,
+)
 from .layers.deltanet import RESTART_BLOCKS, restart_edges
 
 __all__ = [
@@ -151,19 +155,22 @@ def segment_bounds(context: Any) -> SegmentBounds | None:
 
 def segment_labels(
     tokens: npt.NDArray[np.integer],
-    marker_id: int = MARKER_TOKEN_ID,
+    marker_id: int | Sequence[int] = MARKER_TOKEN_ID,
     separator_id: int = SEPARATOR_TOKEN_ID,
 ) -> npt.NDArray[np.int32]:
     """Returns one row's segment labels, the host twin of ``marker_segments``.
 
     Tokens up to and including the ``<|fim_middle|>`` separator get -1, and
-    chunk ``i`` (its question text plus the ``<|fim_suffix|>`` that ends it) gets
-    ``i``. A token's chunk number is how many markers sit before it, so the row
-    needs no second input to say where a chunk starts.
+    chunk ``i`` (its question text plus the marker that ends it) gets
+    ``i``. A token's chunk number is how many markers sit before it, so the
+    row needs no second input to say where a chunk starts. ``marker_id``
+    accepts either one id or the pair of chunk-ending ids; a row holds one
+    dialect's markers, so counting the pair answers both.
     """
-    is_marker = tokens == marker_id
+    ids = (marker_id,) if isinstance(marker_id, int) else tuple(marker_id)
+    is_marker: npt.NDArray[np.bool_] = np.isin(tokens, np.asarray(ids))
     is_separator = tokens == separator_id
-    markers_before = np.cumsum(is_marker) - is_marker
+    markers_before: npt.NDArray[np.int64] = np.cumsum(is_marker) - is_marker
     separators_before = np.cumsum(is_separator) - is_separator
     return (markers_before - (separators_before == 0)).astype(np.int32)
 
@@ -214,12 +221,15 @@ class Qwen3_5DeciderBatchProcessor(Qwen3_5BatchProcessor):
             # Host-side ints for :func:`restart_edges`: the labels arrive as
             # the context's numpy array and the count is a plain walk.
             edges = restart_edges(
-                [int(label) for label in segment_labels(tokens)],
+                [
+                    int(label)
+                    for label in segment_labels(tokens, CHUNK_MARKER_IDS)
+                ],
                 RESTART_BLOCKS,
             )
             print(
-                f"segment edges: counted token {MARKER_TOKEN_ID} over"
-                f" {len(tokens)} tokens -> {edges}",
+                f"segment edges: counted any of tokens {CHUNK_MARKER_IDS}"
+                f" over {len(tokens)} tokens -> {edges}",
                 flush=True,
             )
         else:

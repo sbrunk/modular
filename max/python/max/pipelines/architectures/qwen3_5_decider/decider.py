@@ -47,8 +47,9 @@ Deltas layered on top of the donor:
   :data:`~.layers.deltanet.STATE_RESTART_ENABLED` the labels are read off the
   step's span edges, which arrive as a host-filled graph input and say where the
   state ends and where each question ends; without that input,
-  :func:`~.layers.attention.marker_segments` counts the ``<|fim_suffix|>`` token
-  that closes each chunk.
+  :func:`~.layers.attention.marker_segments` counts the token that closes
+  each chunk -- ``<|fim_suffix|>`` for a decisions row, ``<|locate|>`` for a
+  Locate row.
 - **No vision merge, no M-RoPE positions, no speculative path.** The config
   clears the tower and the M-RoPE section, so the rotary table is the static
   one indexed by position within a row, and the graph takes no
@@ -98,7 +99,7 @@ from max.tensor import Tensor, default_dtype
 
 from .layers.adapter import AdapterSites, install, token_gate
 from .layers.attention import (
-    MARKER_TOKEN_ID,
+    CHUNK_MARKER_IDS,
     POSITION_RESTART_ENABLED,
     SEGMENT_MASK_ENABLED,
     DeciderAttention,
@@ -287,12 +288,14 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
                 " token_positions input under the restart gate alone, so with"
                 " the gate off the request's own span counts"
                 " (qwen3_5_decider.batch_processor.SegmentBounds) have no"
-                " graph input to arrive in. Qwen3_5DeciderDecoder.forward then hands"
-                " the layers marker_segments(tokens, input_row_offsets), which"
-                f" counts token {MARKER_TOKEN_ID} per chunk; a Locate row holds"
-                " none of that token, so one label covers the question area and"
-                " the mask cuts nothing. Set DECIDER_STATE_RESTART=1 with"
-                " DECIDER_SEGMENT_MASK=1, or set DECIDER_SEGMENT_MASK=0."
+                " graph input to arrive in. Qwen3_5DeciderDecoder.forward then"
+                " hands the layers marker_segments(tokens,"
+                " input_row_offsets), which counts "
+                f"{CHUNK_MARKER_IDS} off the row's tokens instead of the"
+                " request's table: chunks delimited by another token mask"
+                " wrong, and no served rule says the two agree. Set"
+                " DECIDER_STATE_RESTART=1 with DECIDER_SEGMENT_MASK=1, or"
+                " set DECIDER_SEGMENT_MASK=0."
             )
         # DECIDER_POSITION_RESTART with DECIDER_SEGMENT_MASK used to raise:
         # MAX's masked branch ropes K with rope_ragged, one start position per
@@ -436,7 +439,7 @@ class Qwen3_5DeciderTextModel(Qwen3_5TextModel):
             "the step's [blocks + 2] span edges, filled on the host by"
             " Qwen3_5DeciderBatchProcessor.token_positions"
             if STATE_RESTART_ENABLED
-            else f"token {MARKER_TOKEN_ID} counted inside the graph"
+            else f"tokens {CHUNK_MARKER_IDS} counted inside the graph"
         )
         print(
             f"segment boundaries from: {boundary_rule}",
@@ -654,9 +657,12 @@ class Qwen3_5DeciderDecoder(Module[[DecoderInputs[Tensor]], DecoderOutputs]):
             # labels for its segment table.
             if self.model.restart is None:
                 # No segment table to read, so the labels come off the tokens:
-                # the state-once renderer ends every chunk with
-                # ``<|fim_suffix|>``, and counting it finds the chunk ends.
-                segment_labels = marker_segments(tokens, input_row_offsets)
+                # the state-once renderer ends every chunk with its dialect's
+                # marker -- ``<|fim_suffix|>`` for decisions, ``<|locate|>``
+                # for a Locate row -- and counting either finds the chunk ends.
+                segment_labels = marker_segments(
+                    tokens, input_row_offsets, marker_id=CHUNK_MARKER_IDS
+                )
             else:
                 # The edges come in with the step, and the labels are read off
                 # those edges: one boundary rule for the mask, the rewind and

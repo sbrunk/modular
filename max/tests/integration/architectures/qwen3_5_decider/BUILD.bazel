@@ -57,3 +57,17 @@ modular_py_test(
         requirement("numpy"),
     ],
 )
+
+# Token-level counting on CPU tensors: the fallback rule that labels a
+# step's chunks when a request states no span table, under both chunk
+# markers. No checkpoint, no compiled graph.
+modular_py_test(
+    name = "test_segment_markers",
+    srcs = ["test_segment_markers.py"],
+    deps = [
+        "//max/python/max:tensor",
+        "//max/python/max/dtype",
+        "//max/python/max/pipelines/architectures/qwen3_5_decider",
+        requirement("numpy"),
+    ],
+)

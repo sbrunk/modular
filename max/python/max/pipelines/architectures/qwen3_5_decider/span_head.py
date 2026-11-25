@@ -65,6 +65,8 @@ from max.dtype import DType
 from max.engine import Model
 from max.graph import DeviceRef, Graph, TensorType, ops
 
+from .model_config import LOCATE_MARKER_ID
+
 LOCATE_SUBDIR = "locate-span"
 """The directory beside the shards that holds the Locate tensors."""
 
@@ -126,13 +128,22 @@ def find_locate_settings(model_path: str | Path) -> LocateSettings | None:
             f" reads {LOCATE_FORMAT!r} tensors and thresholds"
         )
     head = raw["head"]
+    marker_id = int(raw["marker_id"])
+    if marker_id != LOCATE_MARKER_ID:
+        raise ValueError(
+            f"{config} names marker_id {marker_id}, and this build counts"
+            f" marker {LOCATE_MARKER_ID}: the graph gates the adapter on"
+            " that constant and counts it as a chunk end, so a checkpoint"
+            " trained on another marker cannot be served without changing"
+            " the constant"
+        )
     return LocateSettings(
         width=int(head["width"]),
         proposals=int(head["proposals"]),
         max_span=int(head["max_span"]),
         threshold=float(raw["thresholds"]["default"]),
         marker=str(raw["marker"]),
-        marker_id=int(raw["marker_id"]),
+        marker_id=marker_id,
         prompt=str(raw["prompt"]),
         prompt_format=str(raw["prompt_format"]),
     )

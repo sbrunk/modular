@@ -108,10 +108,13 @@ from max.pipelines.architectures.qwen3_5_modulev3.qwen3_5 import (
 from max.tensor import Tensor
 from max.tensor.sharding import DeviceMapping, Partial
 
+from ..model_config import LOCATE_MARKER_ID
 from .adapter import AdapterGate, pair_of, with_delta
 from .deltanet import StateRestart
 
 __all__ = [
+    "CHUNK_MARKER_IDS",
+    "MARKER_TOKEN_ID",
     "POSITION_RESTART_ENABLED",
     "SEGMENT_MASK_ENABLED",
     "DeciderAttention",
@@ -193,11 +196,21 @@ The renderer puts it once per row, between the state and the first question
 chunk, so it is the last token of the segment every chunk may see.
 """
 
+CHUNK_MARKER_IDS: tuple[int, ...] = (MARKER_TOKEN_ID, LOCATE_MARKER_ID)
+"""Both ids that end a question chunk: decisions end at ``<|fim_suffix|>``,
+Locate chunks at ``<|locate|>``.
+
+A row holds one dialect or the other, never both, so counting either id as
+a chunk end answers every row the server sees: the shared decisions row
+scores and the Locate row that asks for hidden rows. A step cannot be told
+which dialect it carries, so the count does not try.
+"""
+
 
 def marker_segments(
     tokens: Tensor,
     input_row_offsets: Tensor,
-    marker_id: int = MARKER_TOKEN_ID,
+    marker_id: int | Sequence[int] = MARKER_TOKEN_ID,
     separator_id: int = SEPARATOR_TOKEN_ID,
 ) -> Tensor:
     """Returns each token's int32 segment id, read off the step's tokens.
@@ -225,7 +238,13 @@ def marker_segments(
             base, row_lengths, out_dim=counted.shape[0]
         )
 
-    markers, marker_base = before_each_row(tokens == marker_id)
+    if isinstance(marker_id, int):
+        marker_flags = tokens == marker_id
+    else:
+        marker_flags = functools.reduce(
+            F.logical_or, (tokens == one for one in marker_id)
+        )
+    markers, marker_base = before_each_row(marker_flags)
     separators, separator_base = before_each_row(tokens == separator_id)
     # A token of the state block has met no marker, so its chunk count is 0;
     # subtracting the separator test turns that 0 into the shared -1.
