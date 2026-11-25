@@ -33,6 +33,9 @@ modular_py_test(
         ],
     ),
     data = glob(["testdata/*"]),
+    # The label-scoring cases share `label_context_fakes.py`, a sibling
+    # module of this package: pytest and mypy resolve it from here.
+    imports = ["."],
     target_compatible_with = select({
         ":macos_ci": ["@platforms//:incompatible"],
         "//conditions:default": [],
@@ -102,6 +105,7 @@ modular_py_test(
         "//max/python/max/pipelines/architectures/qwen3_embedding",
         "//max/python/max/pipelines/architectures/qwen3_embedding_modulev3",
         "//max/python/max/pipelines/architectures/step3p5",
+        "//max/python/max/pipelines/context",
         "//max/python/max/pipelines/lib",
         "//max/python/max/pipelines/modeling",
         "//max/python/max/pipelines/sampling",

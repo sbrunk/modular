@@ -21,36 +21,33 @@ answer: it contributes one row and the scorer asks no candidates of it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
+from label_context_fakes import FakeTokens, label_context
 from max.pipelines.context import TextContext
 from max.pipelines.lib.module_registration import DecoderBatchProcessor
-
-
-@dataclass
-class _Tokens:
-    """The three token counters the row rule reads."""
-
-    active_length: int = 5
-    actively_chunked: bool = False
-    generated_length: int = 0
+from max.pipelines.sampling import SamplingConfig, greedy_argmax_suffices
 
 
 def _context(
     request_id: str,
     positions: list[int] | None = None,
     groups: list[list[int]] | None = None,
-    tokens: _Tokens | None = None,
+    tokens: FakeTokens | None = None,
 ) -> TextContext:
-    """A context built without a tokenizer, holding the scoring fields."""
-    context = TextContext.__new__(TextContext)
-    context.request_id = request_id  # type: ignore[assignment]
-    context.tokens = tokens or _Tokens()  # type: ignore[assignment]
-    context.label_token_ids = list(groups[0]) if groups else None
-    context.label_positions = positions
-    context.label_token_id_groups = groups
-    return context
+    """A context as :meth:`TokenGeneratorPipeline.score` leaves one.
+
+    A positions request names every position's candidates in
+    :attr:`~max.pipelines.context.TextContext.label_token_id_groups` and
+    keeps the first group in
+    :attr:`~max.pipelines.context.TextContext.label_token_ids`.
+    """
+    return label_context(
+        request_id,
+        label_token_ids=list(groups[0]) if groups else None,
+        label_positions=positions,
+        label_token_id_groups=groups,
+        tokens=tokens,
+    )
 
 
 def _processor() -> DecoderBatchProcessor:
@@ -61,10 +58,9 @@ def _processor() -> DecoderBatchProcessor:
 def test_an_unnamed_context_contributes_its_last_row() -> None:
     """The next-token row is the one the sampler already reads."""
     rows = _processor().label_positions(
-        [_context("a"), _context("b", tokens=_Tokens(active_length=3))],
+        [_context("a"), _context("b", tokens=FakeTokens(active_length=3))],
         np.array([0, 5, 8], dtype=np.int64),
     )
-    print(f"unnamed contexts: rows {rows.tolist()}")
     assert rows.tolist() == [4, 7]
 
 
@@ -74,10 +70,9 @@ def test_a_named_context_contributes_one_row_per_position() -> None:
         "shared",
         positions=[2, 4, 9],
         groups=[[1], [2, 3], [4, 5, 6]],
-        tokens=_Tokens(active_length=10),
+        tokens=FakeTokens(active_length=10),
     )
     rows = _processor().label_positions([context], np.array([0, 10], np.int64))
-    print(f"named context: rows {rows.tolist()}")
     assert rows.tolist() == [2, 4, 9]
 
 
@@ -87,18 +82,17 @@ def test_a_chunked_context_naming_positions_contributes_one_row() -> None:
         "chunked",
         positions=[1, 4],
         groups=[[1], [2, 3]],
-        tokens=_Tokens(active_length=6, actively_chunked=True),
+        tokens=FakeTokens(active_length=6, actively_chunked=True),
     )
     whole = _context(
         "whole",
         positions=[2, 5],
         groups=[[1], [2]],
-        tokens=_Tokens(active_length=8),
+        tokens=FakeTokens(active_length=8),
     )
     rows = _processor().label_positions(
         [chunked, whole], np.array([0, 6, 14], np.int64)
     )
-    print(f"chunked plus whole: rows {rows.tolist()}")
     assert rows.tolist() == [5, 8, 11]
     assert len(rows) == 3
 
@@ -109,10 +103,30 @@ def test_a_generating_context_naming_positions_contributes_one_row() -> None:
         "decoding",
         positions=[0, 3],
         groups=[[1], [2]],
-        tokens=_Tokens(active_length=1, generated_length=4),
+        tokens=FakeTokens(active_length=1, generated_length=4),
     )
     rows = _processor().label_positions(
         [generating], np.array([9, 10], np.int64)
     )
-    print(f"generating context: rows {rows.tolist()}")
     assert rows.tolist() == [9]
+
+
+def test_a_positions_request_is_not_a_plain_greedy_step() -> None:
+    """``greedy_argmax_suffices`` refuses what a positions request names.
+
+    A positions request keeps a candidate group in ``label_token_ids``, the
+    field that predicate reads, so the step keeps its sampler.
+    """
+    plain = _context("plain", tokens=FakeTokens(active_length=6))
+    assert greedy_argmax_suffices(
+        [plain], SamplingConfig(), constrained_decoding=False
+    )
+    shared = _context(
+        "shared",
+        positions=[2, 5],
+        groups=[[7], [9, 11]],
+        tokens=FakeTokens(active_length=6),
+    )
+    assert not greedy_argmax_suffices(
+        [shared], SamplingConfig(), constrained_decoding=False
+    )

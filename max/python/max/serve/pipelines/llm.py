@@ -903,6 +903,10 @@ class TokenGeneratorPipeline(
                     context.label_positions = list(label_positions)
                     if groups:
                         context.label_token_id_groups = groups
+                        # A positions request stays visible to a reader that
+                        # only tests label_token_ids, such as
+                        # ``greedy_argmax_suffices``.
+                        context.label_token_ids = list(groups[0])
                 else:
                     context.label_token_ids = groups[0]
                 if configure_context is not None:
