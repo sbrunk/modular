@@ -98,6 +98,7 @@ from max.pipelines.architectures.qwen3_5_modulev3.layers.linear import (
     ProjectionTensors,
     matmul,
     stacked_matmul,
+    weight_rows,
 )
 from max.pipelines.architectures.qwen3_5_modulev3.layers.norm import (
     rms_norm_scaled,
@@ -424,8 +425,8 @@ def _attention_core_with_deltas(
             the three projections already share.
     """
     total_seq_len = x.shape[0]
-    q_dim = int(qkv[0].weight.shape[0])
-    kv_dim = int(qkv[1].weight.shape[0])
+    q_dim = weight_rows(qkv[0].weight)
+    kv_dim = weight_rows(qkv[1].weight)
     n_heads = q_dim // (2 * head_dim)
     n_kv_heads = kv_dim // head_dim
     norm = functools.partial(rms_norm_scaled, eps=norm_eps)
