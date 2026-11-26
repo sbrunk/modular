@@ -23,8 +23,8 @@ Derived from
 ``max.pipelines.architectures.qwen3_5_modulev3.layers.gated_deltanet``
 (:class:`GatedDeltaNet`, ``_gated_delta_core``). The projection declarations, the
 on-host ``in_proj_qkv`` placed per device by ``shard_segments``, the decay and beta
-terms, the slot-indexed conv and recurrence kernels, the SM100 gate that picks the
-chunked prefill kernel over the sequential one, the ``F.cond`` split between the
+terms, the slot-indexed conv and recurrence kernels, the Blackwell tcgen05 gate
+that picks the chunked prefill kernel over the sequential one, the ``F.cond`` split between the
 two, the gated norm that scales by ``weight`` and reduces inside one head, the
 swish output gate, and the ``call_on_mesh`` / ``Partial()`` shape of ``forward``
 are the donor's, reached through the donor's class and helpers.
@@ -83,7 +83,11 @@ from max import functional as F
 from max.driver import accelerator_api
 from max.dtype import DType
 from max.graph import BufferValue, DeviceRef, Dim, TensorType, TensorValue
-from max.nn._graph_ops.state_space import read_state_rows, write_state_rows
+from max.nn._graph_ops.state_space import (
+    has_blackwell_tcgen05,
+    read_state_rows,
+    write_state_rows,
+)
 from max.nn.kernels import (
     gated_delta_conv1d_fwd,
     gated_delta_recurrence_fwd,
@@ -92,11 +96,9 @@ from max.nn.kernels import (
     kda_chunk_supports_head_dims,
 )
 from max.pipelines.architectures.qwen3_5_modulev3.layers.gated_deltanet import (
-    _CHUNK_MIN_COMPUTE_CAPABILITY,
     _OUTPUT_GATE_ACTIVATIONS,
     GatedDeltaNet,
     GatedDeltaStateAccess,
-    _nvidia_compute_capability,
 )
 from max.pipelines.architectures.qwen3_5_modulev3.layers.linear import (
     ProjectionTensors,
@@ -483,13 +485,12 @@ def _gated_delta_core_with_deltas(
             input_row_offsets=offsets_uint32,
         )
 
-    # The chunk op's kernels are written for NVIDIA SM100+ (tcgen05 MMAs and
-    # TMA), and a build without the closed-source kernels doesn't register
-    # it; everything else runs the sequential recurrence for prefill too.
-    # TODO(KERN-3635): drop this gate once kda_chunk compiles below SM100.
+    # The chunk op's speed is in its tcgen05 scan and chain bodies, so a part
+    # without tcgen05 keeps the sequential recurrence for prefill. A build
+    # without the closed-source kernels doesn't register the op either.
     chunk_servable = (
         accelerator_api() == "cuda"
-        and _nvidia_compute_capability() >= _CHUNK_MIN_COMPUTE_CAPABILITY
+        and has_blackwell_tcgen05()
         and kda_chunk_supports_head_dims(key_head_dim, value_head_dim)
         and kda_chunk_is_registered()
     )
@@ -514,7 +515,7 @@ def _gated_delta_core_with_deltas(
         if chunk_servable:
             raise NotImplementedError(
                 "the restarted DeltaNet path runs the sequential recurrence;"
-                " the chunked SM100 kernel gets no per-segment slot index"
+                " the chunked Blackwell kernel gets no per-segment slot index"
             )
     elif chunk_servable:
         (recurrence,) = F.cond(
